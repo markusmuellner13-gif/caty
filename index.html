@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#1a1420" />
+  <title>PERCY — A Cat's Big Day Out</title>
+  <meta name="description" content="Play as Percy the cat: escape the house, dodge traffic, cross fields and forests, and catch fish at the lake. A cozy 3D adventure." />
+  <meta property="og:title" content="PERCY — A Cat's Big Day Out" />
+  <meta property="og:description" content="Guide Percy from his bedroom window all the way to the lake. Don't get caught. Catch the fish. Be the cat." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐱</text></svg>" />
+  <link rel="stylesheet" href="./style.css" />
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three.module.js" } }
+  </script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <!-- ======================= HUD ======================= -->
+  <div id="hud" class="screen">
+    <div class="hud-top-left">
+      <div class="stat-card">
+        <div class="bar-row">
+          <span class="bar-icon">❤️</span>
+          <div class="bar hp-bar"><div id="hpFill" class="bar-fill hp"></div></div>
+          <span id="hpText" class="bar-text">100/100</span>
+        </div>
+        <div class="bar-row">
+          <span class="bar-icon">⭐</span>
+          <div class="bar xp-bar"><div id="xpFill" class="bar-fill xp"></div></div>
+          <span id="levelText" class="bar-text">LV 1</span>
+        </div>
+        <div class="mini-stats">
+          <span title="Nine lives">🐱 <b id="livesCount">9</b></span>
+          <span title="Yarn balls">🧶 <b id="yarnCount">0/6</b></span>
+          <span title="Run time">⏱ <b id="timer">0:00</b></span>
+        </div>
+      </div>
+    </div>
+    <div class="hud-top-center">
+      <div class="objective-card">
+        <div id="objective" class="objective-text">Escape through the open bedroom window</div>
+        <div id="distance" class="objective-dist">0 m</div>
+      </div>
+    </div>
+    <div id="fishHud" class="fish-hud">🐟 <b id="fishCount">0/3</b></div>
+    <div id="prompt" class="prompt"></div>
+    <button id="pauseBtn" class="pause-btn" aria-label="Pause">⏸</button>
+    <div id="damageFlash"></div>
+    <div id="lowHpVignette"></div>
+
+    <!-- touch controls -->
+    <div id="touchControls">
+      <div id="joystick"><div id="joyKnob"></div></div>
+      <div class="touch-buttons">
+        <button id="btnMeow" class="tbtn">😺</button>
+        <button id="btnSprint" class="tbtn">💨</button>
+        <button id="btnJump" class="tbtn big">⬆</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================= TITLE ======================= -->
+  <div id="titleScreen" class="screen overlay visible">
+    <div class="title-wrap">
+      <div class="game-logo">
+        <span class="logo-paw">🐾</span>
+        <h1>PERCY</h1>
+        <p class="tagline">A Cat's Big Day Out</p>
+      </div>
+      <div class="menu-buttons">
+        <button id="btnContinue" class="btn primary hidden">▶ Continue</button>
+        <button id="btnNewGame" class="btn primary">🐟 New Adventure</button>
+        <button id="btnHowTo" class="btn">📖 How to Play</button>
+        <button id="btnSettings" class="btn">⚙ Settings</button>
+      </div>
+      <p class="footer-note">From the bedroom window to the lake — 9 lives, 1 mission: fish. 🎣</p>
+    </div>
+  </div>
+
+  <!-- ======================= HOW TO ======================= -->
+  <div id="howToScreen" class="screen overlay">
+    <div class="panel">
+      <h2>How to Play</h2>
+      <div class="howto-grid">
+        <div><b>WASD / Arrows</b><span>Move</span></div>
+        <div><b>Mouse</b><span>Look around</span></div>
+        <div><b>Space</b><span>Jump — press again mid-air for a cat twist double-jump</span></div>
+        <div><b>Shift</b><span>Sprint</span></div>
+        <div><b>Hold towards fences &amp; trees</b><span>Percy climbs automatically 🐾</span></div>
+        <div><b>M</b><span>Meow (important)</span></div>
+        <div><b>Esc / P</b><span>Pause</span></div>
+        <div><b>Space at the pier</b><span>Pounce on fish</span></div>
+      </div>
+      <p class="hint">Follow the golden beacon. Paw pads are checkpoints. Cars are fatal, the dog bites, water drains HP. Snacks heal, milk fully heals, yarn gives XP.</p>
+      <button class="btn primary back-btn">Back</button>
+    </div>
+  </div>
+
+  <!-- ======================= SETTINGS ======================= -->
+  <div id="settingsScreen" class="screen overlay">
+    <div class="panel">
+      <h2>Settings</h2>
+      <div class="setting-row">
+        <label>Music volume</label>
+        <input id="setMusic" type="range" min="0" max="1" step="0.05" value="0.6" />
+      </div>
+      <div class="setting-row">
+        <label>SFX volume</label>
+        <input id="setSfx" type="range" min="0" max="1" step="0.05" value="0.8" />
+      </div>
+      <div class="setting-row">
+        <label>Mouse sensitivity</label>
+        <input id="setSens" type="range" min="0.3" max="2.5" step="0.1" value="1" />
+      </div>
+      <div class="setting-row">
+        <label>Invert Y</label>
+        <input id="setInvertY" type="checkbox" />
+      </div>
+      <div class="setting-row">
+        <label>Quality</label>
+        <div class="seg" id="setQuality">
+          <button data-v="low">Low</button>
+          <button data-v="medium">Medium</button>
+          <button data-v="high" class="on">High</button>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label>Percy's coat</label>
+        <div class="seg" id="setPalette">
+          <button data-v="percy" class="on">🐈 Percy</button>
+          <button data-v="tabby">🧡 Tabby</button>
+          <button data-v="shadow">🖤 Black</button>
+          <button data-v="smoke">🩶 Gray</button>
+          <button data-v="cloud">🤍 White</button>
+        </div>
+      </div>
+      <button class="btn primary back-btn">Back</button>
+    </div>
+  </div>
+
+  <!-- ======================= PAUSE ======================= -->
+  <div id="pauseScreen" class="screen overlay">
+    <div class="panel">
+      <h2>Paused</h2>
+      <div class="menu-buttons">
+        <button id="btnResume" class="btn primary">▶ Resume</button>
+        <button id="btnRestartCp" class="btn">🐾 Back to Checkpoint</button>
+        <button id="btnPauseSettings" class="btn">⚙ Settings</button>
+        <button id="btnQuit" class="btn danger">🏠 Quit to Title</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================= DEATH ======================= -->
+  <div id="deathScreen" class="screen overlay death">
+    <div class="panel death-panel">
+      <div class="death-icon">😿</div>
+      <h2 id="deathReason">Percy got hit by a car…</h2>
+      <p id="deathLives">8 lives left</p>
+      <button id="btnRespawn" class="btn primary">🐾 Use a Life — Respawn</button>
+    </div>
+  </div>
+
+  <!-- ======================= WIN ======================= -->
+  <div id="winScreen" class="screen overlay">
+    <div class="panel win-panel">
+      <div class="win-icon">😻</div>
+      <h2>Percy made it!</h2>
+      <p class="win-sub">Three fresh fish by the lake. Best. Day. Ever.</p>
+      <div class="win-stats">
+        <div><span>⏱ Time</span><b id="winTime">0:00</b></div>
+        <div><span>💀 Lives lost</span><b id="winDeaths">0</b></div>
+        <div><span>⭐ XP</span><b id="winXp">0</b></div>
+        <div><span>📈 Level</span><b id="winLevel">1</b></div>
+        <div><span>🧶 Yarn</span><b id="winYarn">0/6</b></div>
+      </div>
+      <div class="menu-buttons">
+        <button id="btnPlayAgain" class="btn primary">🔁 Play Again</button>
+        <button id="btnWinQuit" class="btn">🏠 Title</button>
+      </div>
+    </div>
+    <div id="confetti"></div>
+  </div>
+
+  <!-- toast + click-to-start -->
+  <div id="toast"></div>
+  <div id="clickCatch" class="hidden"><span>Click to grab the mouse 🐭</span></div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
