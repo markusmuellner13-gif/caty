@@ -1,7 +1,9 @@
-// Percy v2: procedural cat with real feline proportions and a lively
-// code-driven animation rig. No external assets — fur is painted at runtime.
+// Percy v3: procedural cat with real feline proportions and a modern
+// code-driven animation rig — two-bone IK legs, real gait patterns
+// (lateral-sequence walk → trot → rotary gallop), spine flex, head
+// stabilization and a spring-lagged tail. No external assets.
 import * as THREE from 'three';
-import { clamp, damp, TAU } from './util.js';
+import { clamp, lerp, damp, smoothstep, TAU } from './util.js';
 
 export const CAT_PALETTES = {
   // The real Percy: gray-brown mackerel tabby, black stripes, amber eyes,
@@ -77,6 +79,12 @@ function furTexture(base, stripe, warm, vertical = false) {
   return tex;
 }
 
+// Gait phase offsets per leg [FR, FL, HR, HL] (fraction of a stride cycle).
+const OFF_WALK = [0.75, 0.25, 0.5, 0.0];   // 4-beat lateral sequence walk
+const OFF_TROT = [0.0, 0.5, 0.5, 0.0];     // diagonal pairs
+const OFF_GALLOP = [0.5, 0.62, 0.12, 0.0]; // rotary gallop
+const DUTY_WALK = 0.62, DUTY_TROT = 0.5, DUTY_GALLOP = 0.33;
+
 export function createCat(paletteKey = 'percy') {
   const P = CAT_PALETTES[paletteKey] || CAT_PALETTES.percy;
   const fur = new THREE.MeshStandardMaterial({ map: furTexture(P.base, P.stripe, P.warm), roughness: 0.92 });
@@ -95,36 +103,42 @@ export function createCat(paletteKey = 'percy') {
   const body = new THREE.Group();   // bob / roll / squash
   root.add(body);
 
-  // ---------------- torso: chest + hindquarters + haunches ----------------
+  // Two spine groups so the back can flex during the gallop:
+  const chest = new THREE.Group();  // front half (shoulders, neck, front legs)
+  chest.position.set(0, 0.37, 0.12);
+  const rear = new THREE.Group();   // hindquarters (pelvis, hind legs, tail)
+  rear.position.set(0, 0.36, -0.2);
+  body.add(chest, rear);
+
+  // ---------------- torso ----------------
   const chestG = new THREE.Mesh(new THREE.CapsuleGeometry(0.185, 0.3, 6, 14), fur);
   chestG.rotation.x = Math.PI / 2;
-  chestG.position.set(0, 0.37, 0.1);
+  chestG.position.set(0, 0, -0.02);
   chestG.scale.set(1, 1.02, 1);
-  body.add(chestG);
+  chest.add(chestG);
 
   const hind = new THREE.Mesh(new THREE.SphereGeometry(0.2, 14, 12), fur);
-  hind.position.set(0, 0.36, -0.2);
   hind.scale.set(1, 1.02, 1.25);
-  body.add(hind);
+  rear.add(hind);
 
   // haunches (thigh domes)
   for (const s of [-1, 1]) {
     const h = new THREE.Mesh(new THREE.SphereGeometry(0.115, 10, 9), fur);
-    h.position.set(0.13 * s, 0.31, -0.21);
+    h.position.set(0.13 * s, -0.05, -0.01);
     h.scale.set(0.7, 1.1, 1.15);
-    body.add(h);
+    rear.add(h);
   }
 
   // cream chest ruff / bib
   const ruff = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 10), belly);
-  ruff.position.set(0, 0.33, 0.26);
+  ruff.position.set(0, -0.04, 0.14);
   ruff.scale.set(0.85, 1.0, 0.75);
-  body.add(ruff);
+  chest.add(ruff);
 
   // ---------------- head ----------------
   const neck = new THREE.Group();
-  neck.position.set(0, 0.47, 0.28);
-  body.add(neck);
+  neck.position.set(0, 0.1, 0.16);
+  chest.add(neck);
   const head = new THREE.Group();
   head.position.set(0, 0.1, 0.13);
   neck.add(head);
@@ -196,33 +210,58 @@ export function createCat(paletteKey = 'percy') {
   }
   head.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(wPts), whiskerMat));
 
-  // ---------------- legs ----------------
-  const upperGeo = new THREE.CapsuleGeometry(0.052, 0.17, 4, 8);
-  const pawGeo = new THREE.SphereGeometry(0.052, 8, 6);
+  // ---------------- legs: two bones + IK ----------------
+  const L1 = 0.17, L2 = 0.16;               // upper / lower bone lengths
+  const upperGeo = new THREE.CapsuleGeometry(0.05, 0.1, 4, 8);
+  const lowerGeo = new THREE.CapsuleGeometry(0.037, 0.1, 4, 8);
+  const pawGeo = new THREE.SphereGeometry(0.05, 8, 6);
   const legs = [];
+  // order: FR, FL, HR, HL  (front legs on the chest group, hind on the rear)
   const legDefs = [
-    { x: 0.105, z: 0.245, front: true },
-    { x: -0.105, z: 0.245, front: true },
-    { x: 0.125, z: -0.21, front: false },
-    { x: -0.125, z: -0.21, front: false },
+    { x: 0.105, front: true }, { x: -0.105, front: true },
+    { x: 0.125, front: false }, { x: -0.125, front: false },
   ];
   for (const d of legDefs) {
-    const pivot = new THREE.Group();
-    pivot.position.set(d.x, 0.33, d.z);
+    const pivot = new THREE.Group();          // hip / shoulder
+    if (d.front) { pivot.position.set(d.x, -0.04, 0.125); chest.add(pivot); }
+    else { pivot.position.set(d.x, -0.03, -0.01); rear.add(pivot); }
     const upper = new THREE.Mesh(upperGeo, d.front ? fur : furPlain);
-    upper.position.y = -0.13;
+    upper.position.y = -L1 / 2;
+    pivot.add(upper);
+    const knee = new THREE.Group();           // elbow (front) / stifle (hind)
+    knee.position.y = -L1;
+    pivot.add(knee);
+    const lower = new THREE.Mesh(lowerGeo, d.front ? fur : furPlain);
+    lower.position.y = -L2 / 2;
+    knee.add(lower);
     const paw = new THREE.Mesh(pawGeo, pawMat);
-    paw.position.y = -0.28;
-    paw.scale.set(1, 0.65, 1.25);
-    pivot.add(upper, paw);
-    body.add(pivot);
-    legs.push({ pivot, front: d.front, side: Math.sign(d.x) });
+    paw.position.set(0, -L2 + 0.015, 0.02);
+    paw.scale.set(1, 0.6, 1.3);
+    knee.add(paw);
+    legs.push({
+      pivot, knee, front: d.front, side: Math.sign(d.x),
+      // current (damped) foot target, relative to the hip pivot
+      tz: d.front ? 0.02 : -0.02, ty: d.front ? -0.31 : -0.3,
+    });
   }
 
-  // ---------------- tail: 7 segments, dark tip ----------------
+  // Two-bone IK: place the foot at (tz, ty) relative to the hip.
+  // Front legs bend elbow-back, hind legs bend knee-forward.
+  function solveLeg(leg) {
+    const s = leg.front ? 1 : -1;
+    let d = Math.hypot(leg.tz, leg.ty);
+    d = clamp(d, 0.09, L1 + L2 - 0.004);
+    const baseA = Math.atan2(leg.tz, -leg.ty);
+    const cosH = clamp((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d), -1, 1);
+    const cosK = clamp((L1 * L1 + L2 * L2 - d * d) / (2 * L1 * L2), -1, 1);
+    leg.pivot.rotation.x = -baseA + s * Math.acos(cosH);
+    leg.knee.rotation.x = -s * (Math.PI - Math.acos(cosK));
+  }
+
+  // ---------------- tail: 7 segments, dark tip, spring-lagged ----------------
   const tailSegs = [];
-  let parent = body;
-  let segPos = new THREE.Vector3(0, 0.42, -0.36);
+  let parent = rear;
+  let segPos = new THREE.Vector3(0, 0.06, -0.16);
   for (let i = 0; i < 7; i++) {
     const seg = new THREE.Group();
     seg.position.copy(segPos);
@@ -236,6 +275,10 @@ export function createCat(paletteKey = 'percy') {
     segPos = new THREE.Vector3(0, 0.012, -0.1);
     tailSegs.push(seg);
   }
+  // spring state: pitch/yaw + angular velocity per segment
+  const tp = new Float32Array(7), tvP = new Float32Array(7);
+  const ty = new Float32Array(7), tvY = new Float32Array(7);
+  for (let i = 0; i < 7; i++) tp[i] = -0.35;
 
   root.traverse((o) => { if (o.isMesh) o.castShadow = true; });
 
@@ -243,16 +286,18 @@ export function createCat(paletteKey = 'percy') {
   let t = 0;
   let blink = 0, nextBlink = 2;
   let prevGrounded = true, squash = 0;
-  let groomClock = 0, grooming = 0;
-  let earTwitch = 0;
+  let groomClock = 0, grooming = 0, stretchT = 0, sinceStretch = 0;
+  let earTwitch = 0, flickT = 0;
+  let gaitT = 0;
+  const off = OFF_WALK.slice();   // damped per-leg phase offsets
+  let duty = DUTY_WALK;
 
   const S = { mode: 'idle', speed: 0, grounded: true, lean: 0 };
 
   function update(dt, state) {
     Object.assign(S, state);
     t += dt;
-    const run = clamp(S.speed / 6.5, 0, 1);
-    const ph = t * (5 + run * 8);
+    const speed = S.speed || 0;
 
     // blink (with occasional slow, content blink)
     nextBlink -= dt;
@@ -260,58 +305,107 @@ export function createCat(paletteKey = 'percy') {
     blink = Math.max(0, blink - dt);
     for (const e of eyes) e.scale.y = blink > 0 ? 0.12 : 1;
 
-    // landing squash
-    if (S.grounded && !prevGrounded) squash = 0.14;
+    // landing squash & recovery
+    if (S.grounded && !prevGrounded) squash = 0.16;
     prevGrounded = S.grounded;
     squash = Math.max(0, squash - dt);
-    const sq = squash > 0 ? 1 - Math.sin((squash / 0.14) * Math.PI) * 0.18 : 1;
+    const sq = squash > 0 ? 1 - Math.sin((squash / 0.16) * Math.PI) * 0.16 : 1;
     body.scale.y = damp(body.scale.y, sq, 20, dt);
-    body.scale.x = damp(body.scale.x, 2 - sq > 1 ? 1 + (1 - sq) * 0.6 : 1, 20, dt);
+    body.scale.x = damp(body.scale.x, 1 + (1 - sq) * 0.55, 20, dt);
+
+    // tail helper — runs the spring chain toward a driven base pose
+    function tailDynamics(basePitch, baseYaw, curl) {
+      for (let i = 0; i < 7; i++) {
+        const targP = (i === 0 ? basePitch : tp[i - 1] * 0.9) + curl * (i / 7);
+        const targY = i === 0 ? baseYaw : ty[i - 1];
+        const k = 85 - i * 7, c = 9.5;
+        tvP[i] += (k * (targP - tp[i]) - c * tvP[i]) * dt;
+        tvY[i] += ((k * 0.8) * (targY - ty[i]) - c * tvY[i]) * dt;
+        tvP[i] = clamp(tvP[i], -22, 22);
+        tvY[i] = clamp(tvY[i], -22, 22);
+        tp[i] += tvP[i] * dt;
+        ty[i] += tvY[i] * dt;
+        tailSegs[i].rotation.x = tp[i];
+        tailSegs[i].rotation.y = ty[i];
+      }
+    }
 
     if (S.mode === 'death') {
       root.rotation.z = damp(root.rotation.z, Math.PI / 2 * 0.96, 8, dt);
       body.position.y = damp(body.position.y, -0.12, 8, dt);
-      for (const l of legs) l.pivot.rotation.x = damp(l.pivot.rotation.x, 0.5, 6, dt);
+      for (const l of legs) {
+        l.tz = damp(l.tz, l.front ? 0.1 : -0.12, 6, dt);
+        l.ty = damp(l.ty, -0.16, 6, dt);
+        solveLeg(l);
+      }
       neck.rotation.x = damp(neck.rotation.x, 0.4, 6, dt);
       for (const e of eyes) e.scale.y = 0.08;
-      for (const seg of tailSegs) {
-        seg.rotation.x = damp(seg.rotation.x, 0.08, 4, dt);
-        seg.rotation.y = damp(seg.rotation.y, 0, 4, dt);
-      }
+      tailDynamics(0.06, 0, 0);
       return;
     }
     root.rotation.z = damp(root.rotation.z, 0, 12, dt);
 
     let bodyY = 0, bodyPitch = 0, bodyRoll = clamp(S.lean || 0, -0.35, 0.35);
+    let chestFlex = 0, rearFlex = 0;
     let neckPitch = 0, headYaw = null, headPitch = 0;
     let earFlat = 0;
-    const legT = [0, 0, 0, 0];
     let tailLift = 0.35, tailSway = 0.28, tailFreq = 1.6, tailCurl = 0.12;
+    // per-leg foot targets (relative to hips)
+    const T = [
+      { tz: 0.02, ty: -0.31 }, { tz: 0.02, ty: -0.31 },
+      { tz: -0.02, ty: -0.3 }, { tz: -0.02, ty: -0.3 },
+    ];
+
+    const locomoting = S.mode === 'walk' || S.mode === 'run';
+    if (S.mode !== 'idle') { groomClock = 0; grooming = 0; stretchT = 0; }
 
     switch (S.mode) {
       case 'sit': {
-        bodyY = -0.085;
-        bodyPitch = -0.5;
-        neckPitch = 0.48;
-        legT[0] = legT[1] = 0.42;
-        legT[2] = legT[3] = -1.55;
-        // tail wraps around the front
-        tailLift = -0.35; tailSway = 0.12; tailFreq = 0.8; tailCurl = 0.5;
+        bodyY = -0.1;
+        bodyPitch = -0.55;
+        neckPitch = 0.5;
+        // front legs planted straight, hind legs folded under the haunches
+        T[0].tz = T[1].tz = 0.1; T[0].ty = T[1].ty = -0.32;
+        T[2].tz = T[3].tz = 0.08; T[2].ty = T[3].ty = -0.12;
+        // tail wraps around the front, tip flicks now and then
+        tailLift = -0.4; tailSway = 0; tailCurl = 0.55;
+        flickT -= dt;
+        if (flickT <= 0) { flickT = 2 + Math.random() * 4; tvY[4] += 9; tvY[5] += 12; }
         headYaw = Math.sin(t * 0.3) * 0.3;
         break;
       }
       case 'idle': {
         bodyY = Math.sin(t * 2.1) * 0.008;
-        chestG.scale.x = 1 + Math.sin(t * 2.1) * 0.015;
+        chestG.scale.x = 1 + Math.sin(t * 2.1) * 0.015;      // breathing
+        bodyRoll += Math.sin(t * 0.42) * 0.025;              // slow weight shift
         neckPitch = Math.sin(t * 0.5) * 0.05;
         headYaw = Math.sin(t * 0.33) * 0.35;
-        // grooming: after a few idle seconds, wash the face with a paw
+        // weight shift moves the standing feet a touch
+        const shift = Math.sin(t * 0.42) * 0.008;
+        T[0].tz += shift; T[1].tz -= shift;
+
         groomClock += dt;
-        if (grooming <= 0 && groomClock > 5.5) { grooming = 2.6; groomClock = 0; }
+        sinceStretch += dt;
+        // big cat stretch after a while idle: butt up, chest down, front paws forward
+        if (stretchT <= 0 && sinceStretch > 9 && grooming <= 0) { stretchT = 2.4; sinceStretch = 0; }
+        if (stretchT > 0) {
+          stretchT -= dt;
+          const e = Math.sin(clamp(1 - stretchT / 2.4, 0, 1) * Math.PI);  // ease in-out
+          bodyPitch = 0.34 * e;
+          bodyY = -0.045 * e;
+          T[0].tz = T[1].tz = 0.02 + 0.17 * e;
+          T[0].ty = T[1].ty = -0.31 + 0.035 * e;
+          T[2].ty = T[3].ty = -0.3 - 0.02 * e;
+          neckPitch = -0.3 * e;
+          headYaw = 0;
+          tailLift = 0.35 + 0.55 * e;
+        } else if (grooming <= 0 && groomClock > 5.5) { grooming = 2.6; groomClock = 0; }
         if (grooming > 0) {
           grooming -= dt;
           const gph = Math.sin(t * 9);
-          legT[0] = -1.5 + gph * 0.35;      // left front paw up, circular wipe
+          // right front paw up doing circular wipes, head tucked to meet it
+          T[0].tz = 0.16 + gph * 0.025;
+          T[0].ty = -0.1 + gph * 0.02;
           neckPitch = 0.55;
           headYaw = 0.25 + gph * 0.12;
           headPitch = 0.15;
@@ -326,86 +420,143 @@ export function createCat(paletteKey = 'percy') {
       }
       case 'walk':
       case 'run': {
-        groomClock = 0; grooming = 0;
-        const amp = 0.5 + run * 0.55;
-        legT[0] = Math.sin(ph) * amp;
-        legT[3] = Math.sin(ph) * amp;
-        legT[1] = Math.sin(ph + Math.PI) * amp;
-        legT[2] = Math.sin(ph + Math.PI) * amp;
-        bodyY = Math.abs(Math.sin(ph)) * (0.018 + run * 0.055);
-        bodyPitch = Math.sin(ph * 2) * 0.035 * run;
-        bodyRoll += Math.sin(ph) * 0.045 * run;
-        neckPitch = -0.05 * run + Math.sin(ph * 2) * 0.03 * run; // head counter-bob
+        // --- gait engine ---
+        const trotW = smoothstep(2.0, 3.4, speed);
+        const gallopW = smoothstep(4.4, 5.7, speed);
+        // blend phase offsets + duty factor between gaits
+        for (let i = 0; i < 4; i++) {
+          let o = lerp(OFF_WALK[i], OFF_TROT[i], trotW);
+          o = lerp(o, OFF_GALLOP[i], gallopW);
+          off[i] = damp(off[i], o, 5, dt);
+        }
+        duty = damp(duty, lerp(lerp(DUTY_WALK, DUTY_TROT, trotW), DUTY_GALLOP, gallopW), 5, dt);
+        // stride clock — cadence rises with speed, stride length too
+        const freq = clamp(speed / (0.55 + speed * 0.1), 1.4, 5.4);
+        gaitT += dt * freq;
+
+        const amp = 0.085 + trotW * 0.02 + gallopW * 0.1;    // half-stride reach
+        const lift = 0.05 + gallopW * 0.085;                 // swing foot lift
+        for (let i = 0; i < 4; i++) {
+          const leg = legs[i];
+          const p = (gaitT + off[i]) % 1;
+          const lead = leg.front ? 0.03 : -0.04;
+          let fz, fy;
+          if (p < duty) {           // stance: foot drags back under the body
+            const s = p / duty;
+            fz = lerp(amp, -amp, s); fy = 0;
+          } else {                  // swing: arc forward with lift
+            const s = (p - duty) / (1 - duty);
+            const e = s * s * (3 - 2 * s);
+            fz = lerp(-amp, amp, e); fy = Math.sin(s * Math.PI) * lift;
+          }
+          T[i].tz = fz + lead;
+          T[i].ty = (leg.front ? -0.31 : -0.3) + fy;
+        }
+
+        // body dynamics per gait
+        const cyc = gaitT * TAU;
+        bodyY = Math.sin(cyc * 2) * 0.012 * (1 - gallopW)          // walk/trot 2-beat bob
+          + (Math.sin(cyc) * 0.038 + 0.02) * gallopW;              // gallop bound
+        bodyPitch = Math.sin(cyc + 0.4) * 0.07 * gallopW;
+        bodyRoll += Math.sin(cyc * 0.5 + 1) * 0.035 * (1 - trotW); // lazy walk sway
+        // spine flexion/extension — the signature gallop whip
+        chestFlex = Math.sin(cyc) * (0.03 + 0.17 * gallopW);
+        rearFlex = Math.sin(cyc + Math.PI * 0.65) * (0.025 + 0.2 * gallopW);
+        // cats keep their head level: counter the chest motion
+        neckPitch = -chestFlex * 0.8 - 0.06 * gallopW;
         headYaw = 0;
-        earFlat = run * 0.55;
-        tailLift = 0.45 + run * 0.35; tailFreq = 2 + run * 3.2; tailSway = 0.2; tailCurl = 0.05;
+        earFlat = gallopW * 0.55;
+        tailLift = 0.4 + gallopW * 0.3;
+        tailSway = 0.14; tailFreq = 1 + freq * 0.5; tailCurl = 0.05;
         break;
       }
       case 'jump': {
-        legT[0] = legT[1] = -1.0;
-        legT[2] = legT[3] = 1.15;
-        bodyPitch = 0.3;
-        neckPitch = -0.2;
+        // full launch extension: hind legs driving back, front tucked
+        T[0].tz = T[1].tz = 0.06; T[0].ty = T[1].ty = -0.15;
+        T[2].tz = T[3].tz = -0.17; T[2].ty = T[3].ty = -0.3;
+        bodyPitch = 0.32;
+        chestFlex = -0.12; rearFlex = 0.1;                   // spine extended
+        neckPitch = -0.28;
         tailLift = 0.05; tailCurl = 0;
         earFlat = 0.3;
         break;
       }
       case 'fall': {
-        legT[0] = legT[1] = -0.55;
-        legT[2] = legT[3] = 0.45;
-        bodyPitch = -0.22;
-        neckPitch = 0.28;
-        tailLift = 0.75; tailFreq = 6.5; tailSway = 0.55;
+        // gather for landing: all four reaching down-forward
+        T[0].tz = T[1].tz = 0.13; T[0].ty = T[1].ty = -0.26;
+        T[2].tz = T[3].tz = 0.02; T[2].ty = T[3].ty = -0.22;
+        bodyPitch = -0.18;
+        chestFlex = 0.1; rearFlex = -0.08;                   // spine arched
+        neckPitch = 0.32;
+        tailLift = 0.7; tailSway = 0.5; tailFreq = 5.5;      // balancing tail
         break;
       }
       case 'climb': {
+        // alternating diagonal reaches up the wall (body is pitched onto it)
         const cph = t * 7.5;
-        legT[0] = -1.45 + Math.sin(cph) * 0.5;
-        legT[1] = -1.45 + Math.sin(cph + Math.PI) * 0.5;
-        legT[2] = -0.65 + Math.sin(cph + Math.PI) * 0.4;
-        legT[3] = -0.65 + Math.sin(cph) * 0.4;
+        for (let i = 0; i < 4; i++) {
+          const ph = cph + (i === 0 || i === 3 ? 0 : Math.PI);
+          const reach = Math.sin(ph);
+          const leg = legs[i];
+          T[i].tz = (leg.front ? 0.1 : 0.0) + reach * 0.09;
+          T[i].ty = -0.2 - Math.max(0, -reach) * 0.06 + Math.max(0, reach) * 0.03;
+        }
         bodyPitch = -1.18;
         neckPitch = 1.05;
-        tailLift = -0.35; tailCurl = 0.3;
+        tailLift = -0.3; tailCurl = 0.3; tailSway = 0.18; tailFreq = 2.4;
         break;
       }
       case 'pounce': {
-        legT[0] = legT[1] = -1.25;
-        legT[2] = legT[3] = 1.25;
-        bodyPitch = 0.4;
+        // reaching strike — front paws out, claws first
+        T[0].tz = T[1].tz = 0.2; T[0].ty = T[1].ty = -0.17;
+        T[2].tz = T[3].tz = -0.16; T[2].ty = T[3].ty = -0.28;
+        bodyPitch = 0.42;
+        chestFlex = -0.1;
+        neckPitch = -0.2;
         earFlat = 0.6;
+        tailLift = 0.15;
         break;
       }
       case 'swim': {
-        const sph = t * 6;
-        legT[0] = Math.sin(sph) * 0.75;
-        legT[1] = Math.sin(sph + Math.PI) * 0.75;
-        legT[2] = Math.sin(sph + 1) * 0.75;
-        legT[3] = Math.sin(sph + Math.PI + 1) * 0.75;
-        bodyPitch = -0.28;
-        neckPitch = 0.55;
+        // doggy-paddle: diagonal pairs churning small circles
+        const sph = t * 6.5;
+        for (let i = 0; i < 4; i++) {
+          const ph = sph + (i === 0 || i === 3 ? 0 : Math.PI) + (legs[i].front ? 0 : 1.2);
+          T[i].tz = Math.cos(ph) * 0.09 + (legs[i].front ? 0.05 : -0.03);
+          T[i].ty = -0.19 + Math.sin(ph) * 0.06;
+        }
+        bodyPitch = -0.26;
+        neckPitch = 0.6;
         bodyY = Math.sin(t * 4) * 0.02;
         earFlat = 0.5;
+        tailLift = 0.05; tailSway = 0.3; tailFreq = 2.2;     // tail streams behind
         break;
       }
     }
 
-    body.position.y = damp(body.position.y, bodyY, 10, dt);
+    // apply body + spine
+    body.position.y = damp(body.position.y, bodyY, locomoting ? 16 : 10, dt);
     body.rotation.x = damp(body.rotation.x, bodyPitch, 10, dt);
     body.rotation.z = damp(body.rotation.z, bodyRoll, 8, dt);
+    chest.rotation.x = damp(chest.rotation.x, chestFlex, 14, dt);
+    rear.rotation.x = damp(rear.rotation.x, rearFlex, 14, dt);
     neck.rotation.x = damp(neck.rotation.x, neckPitch, 8, dt);
     head.rotation.x = damp(head.rotation.x, headPitch, 8, dt);
     if (headYaw !== null) head.rotation.y = damp(head.rotation.y, headYaw, 3, dt);
     for (const ear of ears) ear.rotation.x = damp(ear.rotation.x, -earFlat * 0.6, 9, dt);
-    for (let i = 0; i < 4; i++) legs[i].pivot.rotation.x = damp(legs[i].pivot.rotation.x, legT[i], 14, dt);
 
-    for (let i = 0; i < tailSegs.length; i++) {
-      const seg = tailSegs[i];
-      const base = i === 0 ? -tailLift : -tailLift * 0.22 + tailCurl * (i / tailSegs.length);
-      seg.rotation.x = damp(seg.rotation.x, base, 6, dt);
-      seg.rotation.y = damp(seg.rotation.y,
-        Math.sin(t * tailFreq * Math.PI + i * 0.75) * tailSway * (0.25 + i * 0.16), 8, dt);
+    // apply legs: damp foot targets, then IK
+    const legLambda = locomoting ? 30 : 14;
+    for (let i = 0; i < 4; i++) {
+      const leg = legs[i];
+      leg.tz = damp(leg.tz, T[i].tz, legLambda, dt);
+      leg.ty = damp(leg.ty, T[i].ty, legLambda, dt);
+      solveLeg(leg);
     }
+
+    // tail: driven base + spring-lag chain (whip follows through naturally)
+    const baseYaw = Math.sin(t * tailFreq * Math.PI) * tailSway + clamp(S.lean || 0, -0.4, 0.4) * 1.4;
+    tailDynamics(-tailLift, baseYaw, tailCurl);
   }
 
   return { group: root, update, head, palette: P };

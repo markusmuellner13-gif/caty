@@ -63,6 +63,66 @@ function mats() {
   return M;
 }
 
+// Shared time uniform driving all wind / water shaders.
+const WIND_T = { value: 0 };
+
+// Inject vertex wind sway into a standard material (works with instancing).
+// Blades bend from the root up, with a slow gust cycle rolling across the map.
+function windify(mat, strength = 1, freq = 1) {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uWindT = WIND_T;
+    shader.vertexShader = 'uniform float uWindT;\n' + shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      {
+        #ifdef USE_INSTANCING
+          vec3 wroot = (instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        #else
+          vec3 wroot = vec3(0.0);
+        #endif
+        float wphase = wroot.x * 0.35 + wroot.z * 0.28;
+        float wamt = smoothstep(0.03, 0.6, position.y) * ${strength.toFixed(3)};
+        float gust = 0.55 + 0.45 * sin(uWindT * 0.37 + wroot.x * 0.02 + wroot.z * 0.015);
+        transformed.x += (sin(uWindT * ${(1.8 * freq).toFixed(2)} + wphase) * 0.1
+                        + sin(uWindT * ${(3.1 * freq).toFixed(2)} + wphase * 1.7) * 0.035) * wamt * gust;
+        transformed.z += cos(uWindT * ${(1.4 * freq).toFixed(2)} + wphase * 1.3) * 0.06 * wamt * gust;
+      }`
+    );
+  };
+  // the injected GLSL differs per strength/freq — keep shader programs distinct
+  mat.customProgramCacheKey = () => `wind:${strength}:${freq}`;
+  return mat;
+}
+
+// Water material with layered vertex waves + a moving brightness shimmer.
+function makeWaterMat(color, opacity) {
+  const m = new THREE.MeshStandardMaterial({
+    color, transparent: true, opacity, roughness: 0.12, metalness: 0.08,
+  });
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.uWindT = WIND_T;
+    shader.vertexShader = 'uniform float uWindT;\nvarying float vWave;\n' + shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      {
+        vec2 wp = position.xy;
+        float w = sin(uWindT * 1.35 + wp.x * 0.55 + wp.y * 0.7)
+                + sin(uWindT * 2.1 - wp.x * 0.9 + wp.y * 0.45) * 0.6
+                + sin(uWindT * 0.8 + (wp.x + wp.y) * 0.22) * 0.9;
+        vWave = w / 2.5;
+        transformed.z += w * 0.038;
+      }`
+    );
+    shader.fragmentShader = 'varying float vWave;\n' + shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+      diffuseColor.rgb += vWave * vec3(0.05, 0.08, 0.095);`
+    );
+  };
+  m.customProgramCacheKey = () => 'water';
+  return m;
+}
+
 export function buildWorld(scene) {
   mats();
   const colliders = [];
@@ -151,24 +211,16 @@ export function buildWorld(scene) {
   }
 
   // --------------------------------------------------------------- water
-  const waterUpdate = [];
   {
-    const waterMat = new THREE.MeshStandardMaterial({
-      color: '#4098c8', transparent: true, opacity: 0.78, roughness: 0.15, metalness: 0.1,
-    });
-    const lake = new THREE.Mesh(new THREE.CircleGeometry(26.5, 48), waterMat);
+    // dense geometry so the wave shader has vertices to move
+    const lake = new THREE.Mesh(new THREE.RingGeometry(0.02, 26.5, 64, 22), makeWaterMat('#4098c8', 0.78));
     lake.rotation.x = -Math.PI / 2;
     lake.position.set(0, LAKE_WATER_Y, 295);
     statics.add(lake);
-    const stream = new THREE.Mesh(new THREE.PlaneGeometry(124, 6.6), waterMat.clone());
-    stream.material.opacity = 0.7;
+    const stream = new THREE.Mesh(new THREE.PlaneGeometry(124, 6.6, 96, 10), makeWaterMat('#4098c8', 0.7));
     stream.rotation.x = -Math.PI / 2;
     stream.position.set(0, STREAM_WATER_Y, 150);
     statics.add(stream);
-    waterUpdate.push((t) => {
-      lake.position.y = LAKE_WATER_Y + Math.sin(t * 0.8) * 0.03;
-      stream.position.y = STREAM_WATER_Y + Math.sin(t * 1.3 + 1) * 0.02;
-    });
   }
 
   // ------------------------------------------------------------ row houses
@@ -374,6 +426,12 @@ export function buildWorld(scene) {
   flowerBed(10, 24, 4, 2.4);
   flowerBed(-10, 30, 4, 2.4);
 
+  // foliage that sways gently in the wind (positions nudged each frame)
+  const swayers = [];
+  function sway(mesh, amt = 1) {
+    swayers.push({ mesh, bx: mesh.position.x, bz: mesh.position.z, ph: rand(TAU), amt });
+  }
+
   // garden tree (climbable trunk, canopy)
   function tree(x, z, scale = 1, kind = 'oak') {
     const gy = groundHeight(x, z);
@@ -388,6 +446,7 @@ export function buildWorld(scene) {
         blob.position.set(x + rand(-1.2, 1.2) * scale, gy + (3.6 + rand(1.4)) * scale, z + rand(-1.2, 1.2) * scale);
         blob.castShadow = true;
         statics.add(blob);
+        sway(blob, scale);
       }
     } else {
       const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.16 * scale, 0.26 * scale, 1.6 * scale, 7), M.trunk);
@@ -400,6 +459,7 @@ export function buildWorld(scene) {
         cone.position.set(x, gy + (1.7 + i * 0.95) * scale, z);
         cone.castShadow = true;
         statics.add(cone);
+        sway(cone, 0.35 * (i + 1) * scale);
       }
     }
   }
@@ -410,15 +470,20 @@ export function buildWorld(scene) {
   // clothesline
   box(-8, 1.1, 46, 0.16, 2.2, 0.16, M.metal, { name: 'pole' });
   box(-2, 1.1, 46, 0.16, 2.2, 0.16, M.metal, { name: 'pole' });
+  const sheets = [];
   {
     const line = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 6), M.white);
     line.rotation.z = Math.PI / 2;
     line.position.set(-5, 2.05, 46);
     statics.add(line);
     for (let i = 0; i < 3; i++) {
-      const sheet = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 1.3), new THREE.MeshStandardMaterial({ color: pick(['#fff', '#cfe3f5', '#f5d5cf']), side: THREE.DoubleSide }));
-      sheet.position.set(-7 + i * 1.8, 1.4, 46);
+      // hinge at the top edge so the sheet swings from the line in the breeze
+      const sheetGeo = new THREE.PlaneGeometry(1.2, 1.3);
+      sheetGeo.translate(0, -0.65, 0);
+      const sheet = new THREE.Mesh(sheetGeo, new THREE.MeshStandardMaterial({ color: pick(['#fff', '#cfe3f5', '#f5d5cf']), side: THREE.DoubleSide }));
+      sheet.position.set(-7 + i * 1.8, 2.05, 46);
       statics.add(sheet);
+      sheets.push({ mesh: sheet, ph: i * 1.7 });
     }
   }
   // dog house
@@ -492,11 +557,11 @@ export function buildWorld(scene) {
       statics.add(lamp);
       cylinderCollider(lx, lz, 0.14, 0, 4.4);
     }
-    // parked cars
-    box(-20, 0.62, 97.6, 1.9, 1.1, 4.2, new THREE.MeshStandardMaterial({ color: '#7d4a8f', roughness: 0.4, metalness: 0.4 }), { name: 'parked' });
-    box(-20, 1.35, 97.2, 1.7, 0.6, 2.2, M.glass, { noCollide: true });
-    box(18, 0.62, 82.4, 1.9, 1.1, 4.2, new THREE.MeshStandardMaterial({ color: '#3f7a5c', roughness: 0.4, metalness: 0.4 }), { name: 'parked' });
-    box(18, 1.35, 82.8, 1.7, 0.6, 2.2, M.glass, { noCollide: true });
+    // parked cars (parallel to the street)
+    box(-20, 0.62, 97.6, 4.2, 1.1, 1.9, new THREE.MeshStandardMaterial({ color: '#7d4a8f', roughness: 0.4, metalness: 0.4 }), { name: 'parked' });
+    box(-20.4, 1.35, 97.6, 2.2, 0.6, 1.7, M.glass, { noCollide: true });
+    box(18, 0.62, 82.4, 4.2, 1.1, 1.9, new THREE.MeshStandardMaterial({ color: '#3f7a5c', roughness: 0.4, metalness: 0.4 }), { name: 'parked' });
+    box(18.4, 1.35, 82.4, 2.2, 0.6, 1.7, M.glass, { noCollide: true });
   }
 
   // ------------------------------------------------------------- fields
@@ -518,7 +583,7 @@ export function buildWorld(scene) {
   {
     const stalk = new THREE.ConeGeometry(0.05, 0.9, 4);
     stalk.translate(0, 0.45, 0);
-    const wmat = new THREE.MeshStandardMaterial({ color: '#d9b45c', roughness: 1 });
+    const wmat = windify(new THREE.MeshStandardMaterial({ color: '#d9b45c', roughness: 1 }), 1.3, 0.85);
     const WN = 700;
     const winst = new THREE.InstancedMesh(stalk, wmat, WN);
     const wm4 = new THREE.Matrix4();
@@ -712,6 +777,7 @@ export function buildWorld(scene) {
       blob.position.set(x + rand(-0.8, 0.8) * s, gy + (3.6 + rand(1.2)) * s, z + rand(-0.8, 0.8) * s);
       blob.castShadow = true;
       statics.add(blob);
+      sway(blob, s);
     }
   }
   function tipDark() { return new THREE.MeshStandardMaterial({ color: '#3b352a', roughness: 1 }); }
@@ -842,7 +908,7 @@ export function buildWorld(scene) {
   {
     const blade = new THREE.ConeGeometry(0.06, 0.55, 4);
     blade.translate(0, 0.24, 0);
-    const gmat = new THREE.MeshStandardMaterial({ color: '#79a83f', roughness: 1 });
+    const gmat = windify(new THREE.MeshStandardMaterial({ color: '#79a83f', roughness: 1 }), 1, 1.15);
     const COUNT = 2600;
     const inst = new THREE.InstancedMesh(blade, gmat, COUNT);
     const m4 = new THREE.Matrix4();
@@ -1018,12 +1084,23 @@ export function buildWorld(scene) {
     cab.castShadow = true;
     g.add(bodyM, cab);
     const wheelGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.26, 12);
+    const hubGeo = new THREE.CylinderGeometry(0.14, 0.14, 0.27, 8);
+    const wheels = [];
+    const tireMat = new THREE.MeshStandardMaterial({ color: '#16181c', roughness: 0.9 });
+    const hubMat = new THREE.MeshStandardMaterial({ color: '#9aa2ad', roughness: 0.35, metalness: 0.6 });
     for (const [wx, wz] of [[-0.85, 1.3], [0.85, 1.3], [-0.85, -1.3], [0.85, -1.3]]) {
-      const w = new THREE.Mesh(wheelGeo, new THREE.MeshStandardMaterial({ color: '#16181c', roughness: 0.9 }));
-      w.rotation.z = Math.PI / 2;
+      const w = new THREE.Group();
       w.position.set(wx, 0.32, wz);
+      const tire = new THREE.Mesh(wheelGeo, tireMat);
+      const hub = new THREE.Mesh(hubGeo, hubMat);
+      tire.rotation.z = hub.rotation.z = Math.PI / 2;
+      w.add(tire, hub);
       g.add(w);
+      wheels.push(w);
     }
+    g.userData.wheels = wheels;
+    g.userData.body = bodyM;
+    g.userData.cab = cab;
     const lightM = new THREE.MeshStandardMaterial({ color: '#fff6d5', emissive: '#ffe9a0', emissiveIntensity: 1 });
     for (const s of [-1, 1]) {
       const hl = new THREE.Mesh(new THREE.SphereGeometry(0.11, 6, 5), lightM);
@@ -1064,6 +1141,10 @@ export function buildWorld(scene) {
     tailD.rotation.x = -0.9;
     tailD.position.set(0, 0.62, -0.55);
     dog.tail = tailD;
+    dog.body = bodyD;
+    dog.head = headD;
+    dog.snout = snout;
+    dog.ears = [earD1, earD2];
     dog.group.add(bodyD, headD, snout, earD1, earD2, tailD);
     dog.group.traverse((o) => { if (o.isMesh) o.castShadow = true; });
     dog.group.position.set(6, 0, 52);
@@ -1117,18 +1198,26 @@ export function buildWorld(scene) {
   // ============================================================ butterflies
   const butterflies = [];
   {
+    // wings hinge at the body so they clap above the back like the real thing
     const wingG = new THREE.PlaneGeometry(0.16, 0.22);
+    wingG.rotateX(-Math.PI / 2);
+    wingG.translate(0.09, 0, 0);
     for (let i = 0; i < 12; i++) {
       const g = new THREE.Group();
       const matB = new THREE.MeshBasicMaterial({ color: pick(['#f2b134', '#e85d75', '#7ab8f5', '#c86bd9']), side: THREE.DoubleSide });
-      const w1 = new THREE.Mesh(wingG, matB);
-      const w2 = new THREE.Mesh(wingG, matB);
-      w1.position.x = 0.08; w2.position.x = -0.08;
-      g.add(w1, w2);
+      const p1 = new THREE.Group(), p2 = new THREE.Group();
+      p1.add(new THREE.Mesh(wingG, matB));
+      const m2 = new THREE.Mesh(wingG, matB);
+      m2.scale.x = -1;
+      p2.add(m2);
+      const bodyB = new THREE.Mesh(new THREE.CapsuleGeometry(0.014, 0.1, 3, 5),
+        new THREE.MeshBasicMaterial({ color: '#2c2620' }));
+      bodyB.rotation.x = Math.PI / 2;
+      g.add(p1, p2, bodyB);
       const x = rand(-30, 30), z = rand(10, 260);
       g.position.set(x, Math.max(groundHeight(x, z), 0) + rand(0.6, 2), z);
       scene.add(g);
-      butterflies.push({ g, w1, w2, base: g.position.clone(), t: rand(20), spd: rand(0.5, 1.2) });
+      butterflies.push({ g, p1, p2, base: g.position.clone(), t: rand(20), spd: rand(0.5, 1.2), flapPh: rand(TAU) });
     }
   }
 
@@ -1147,6 +1236,7 @@ export function buildWorld(scene) {
     gF.setAttribute('position', new THREE.BufferAttribute(posF, 3));
     const mF = new THREE.PointsMaterial({ color: '#ffe98a', size: 0.14, transparent: true, opacity: 0.9, sizeAttenuation: true });
     fireflies = new THREE.Points(gF, mF);
+    fireflies.userData.base = posF.slice();
     scene.add(fireflies);
   }
 
@@ -1202,19 +1292,34 @@ export function buildWorld(scene) {
 
   function update(dt, playerPos, cb) {
     elapsed += dt;
-    for (const f of waterUpdate) f(elapsed);
+    WIND_T.value = elapsed;                 // drives grass, wheat and water shaders
     for (const s of spinners) s.rotation.z += dt * 0.8;
 
-    // pickups bob + spin
+    // foliage sway
+    for (const sw of swayers) {
+      sw.mesh.position.x = sw.bx + Math.sin(elapsed * 0.9 + sw.ph) * 0.05 * sw.amt;
+      sw.mesh.position.z = sw.bz + Math.cos(elapsed * 0.7 + sw.ph * 1.3) * 0.04 * sw.amt;
+    }
+    // laundry flapping on the line
+    for (const sh of sheets) {
+      sh.mesh.rotation.x = 0.08 + Math.sin(elapsed * 2.1 + sh.ph) * 0.22 + Math.sin(elapsed * 5.3 + sh.ph * 2) * 0.05;
+    }
+
+    // pickups: eased bob, spin, pulsing glow ring
     for (const p of pickups) {
       if (p.taken) continue;
-      p.mesh.position.y = p.baseY + Math.sin(elapsed * 2 + p.x) * 0.08;
-      p.mesh.rotation.y += dt * 1.4;
+      p.mesh.position.y = p.baseY + Math.sin(elapsed * 1.8 + p.x) * 0.07 + Math.sin(elapsed * 3.4 + p.z) * 0.02;
+      p.mesh.rotation.y += dt * 1.6;
+      const rs = 1 + Math.sin(elapsed * 2.6 + p.x) * 0.12;
+      p.ring.scale.setScalar(rs);
+      p.ring.material.opacity = 0.55 + Math.sin(elapsed * 2.6 + p.x) * 0.25;
     }
-    // checkpoints pulse
+    // checkpoints: slow spin, breathing ring (calms down once activated)
     for (const cpt of checkpoints) {
-      const s = 1 + Math.sin(elapsed * 3) * 0.06;
+      cpt.mesh.rotation.y += dt * (cpt.active ? 0.15 : 0.5);
+      const s = cpt.active ? 1 : 1 + Math.sin(elapsed * 3) * 0.08;
       cpt.ring.scale.setScalar(s);
+      cpt.ring.material.opacity = cpt.active ? 0.45 : 0.55 + Math.sin(elapsed * 3) * 0.25;
     }
     beacon.userData.ring.scale.setScalar(1 + Math.sin(elapsed * 4) * 0.15);
     beacon.rotation.y += dt * 0.5;
@@ -1226,7 +1331,8 @@ export function buildWorld(scene) {
         lane.next = rand(2.2, 5.2);
         const mesh = makeCar();
         mesh.position.set(-66 * lane.dir, 0.05, lane.z);
-        mesh.rotation.y = lane.dir > 0 ? 0 : Math.PI;
+        // cars travel along X; the model faces +Z, so turn it into the lane
+        mesh.rotation.y = lane.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
         carsGroup.add(mesh);
         cars.push({ mesh, dir: lane.dir, speed: rand(9.5, 13.5), z: lane.z, honked: false });
       }
@@ -1235,6 +1341,11 @@ export function buildWorld(scene) {
     for (let i = cars.length - 1; i >= 0; i--) {
       const car = cars[i];
       car.mesh.position.x += car.dir * car.speed * dt;
+      // rolling wheels + a hint of suspension bounce
+      const spin = (car.speed / 0.32) * dt;
+      for (const w of car.mesh.userData.wheels) w.rotation.x += spin;
+      car.mesh.userData.body.position.y = 0.65 + Math.sin(elapsed * 19 + i * 2.1) * 0.008;
+      car.mesh.userData.cab.position.y = 1.28 + Math.sin(elapsed * 19 + i * 2.1 + 0.5) * 0.008;
       const dx = car.mesh.position.x - playerPos.x;
       const dz = car.z - playerPos.z;
       const dist = Math.hypot(dx, dz);
@@ -1280,17 +1391,45 @@ export function buildWorld(scene) {
       }
       const tdx = target[0] - dp.x, tdz = target[1] - dp.z;
       const tdist = Math.hypot(tdx, tdz);
+      let moving = false;
       if (tdist > 0.3) {
+        moving = true;
         const vx = (tdx / tdist) * speed, vz = (tdz / tdist) * speed;
         dp.x = clamp(dp.x + vx * dt, dog.yard.minX, dog.yard.maxX);
         dp.z = clamp(dp.z + vz * dt, dog.yard.minZ, dog.yard.maxZ);
-        dog.group.rotation.y = Math.atan2(vx, vz);
+        // smooth turn toward travel direction instead of snapping
+        const wantYaw = Math.atan2(vx, vz);
+        let dy = (wantYaw - dog.group.rotation.y) % TAU;
+        if (dy > Math.PI) dy -= TAU;
+        if (dy < -Math.PI) dy += TAU;
+        dog.group.rotation.y += dy * Math.min(1, dt * 7);
         dog.legPhase += dt * speed * 3;
-        for (let li = 0; li < 4; li++) {
-          dog.legs[li].rotation.x = Math.sin(dog.legPhase + (li % 2) * Math.PI) * 0.6;
-        }
       }
-      dog.tail.rotation.y = Math.sin(elapsed * (dog.state === 'chase' ? 14 : 5)) * 0.4;
+      // trot: diagonal leg pairs swing + lift, body and head bounce with the gait
+      const ph = dog.legPhase;
+      const gaitAmp = dog.state === 'chase' ? 0.85 : 0.55;
+      for (let li = 0; li < 4; li++) {
+        // legs [FR, FL, HR, HL] → diagonal pairs (FR+HL, FL+HR)
+        const legOff = (li === 0 || li === 3) ? 0 : Math.PI;
+        const sw = Math.sin(ph + legOff);
+        dog.legs[li].rotation.x = moving ? sw * gaitAmp : 0;
+        dog.legs[li].position.y = 0.25 + (moving ? Math.max(0, Math.cos(ph + legOff)) * 0.06 : 0);
+      }
+      const bounce = moving ? Math.abs(Math.sin(ph)) * (dog.state === 'chase' ? 0.06 : 0.03) : Math.sin(elapsed * 2.2) * 0.012;
+      dog.body.position.y = 0.52 + bounce;
+      dog.head.position.y = 0.72 + bounce * 0.7 + (moving ? Math.sin(ph * 2) * 0.015 : 0);
+      dog.snout.position.y = dog.head.position.y - 0.06;
+      // chase posture: head low and forward, ears pinned; patrol: perky
+      dog.head.position.z = dog.state === 'chase' ? 0.58 : 0.52;
+      dog.snout.position.z = dog.head.position.z + 0.22;
+      for (let ei = 0; ei < 2; ei++) {
+        const flop = moving ? Math.sin(ph + ei * 2) * 0.25 : Math.sin(elapsed * 1.5 + ei) * 0.06;
+        dog.ears[ei].rotation.x = (dog.state === 'chase' ? -0.5 : -0.1) + flop;
+        dog.ears[ei].position.y = 0.9 + bounce * 0.7;
+      }
+      // tail: high and whipping in a chase, relaxed wag on patrol
+      dog.tail.rotation.x = dog.state === 'chase' ? -0.35 : -0.9;
+      dog.tail.rotation.y = Math.sin(elapsed * (dog.state === 'chase' ? 16 : 5)) * (dog.state === 'chase' ? 0.55 : 0.35);
       if (dog.state === 'chase' && pdist < 1.1 && dog.biteCool <= 0 && playerPos.y < 1.4) {
         dog.biteCool = 1.3;
         cb.dogBite(pdx, pdz);
@@ -1317,20 +1456,40 @@ export function buildWorld(scene) {
     for (const d of ducks) {
       d.t += dt;
       d.angle += dt * 0.15;
-      d.mesh.position.x += Math.sin(d.angle) * dt * 0.5;
-      d.mesh.position.z += Math.cos(d.angle * 0.7) * dt * 0.4;
-      d.mesh.position.y = LAKE_WATER_Y + 0.1 + Math.sin(d.t * 2) * 0.03;
-      d.mesh.rotation.y = Math.sin(d.angle) * 0.8;
+      const dvx = Math.sin(d.angle) * 0.5, dvz = Math.cos(d.angle * 0.7) * 0.4;
+      d.mesh.position.x += dvx * dt;
+      d.mesh.position.z += dvz * dt;
+      // ride the same swell the water shader draws, plus a paddling waddle
+      d.mesh.position.y = LAKE_WATER_Y + 0.1 + Math.sin(elapsed * 1.35 + d.mesh.position.x * 0.55) * 0.035;
+      d.mesh.rotation.z = Math.sin(d.t * 3.2) * 0.05;
+      if (dvx * dvx + dvz * dvz > 1e-6) {
+        const want = Math.atan2(dvx, dvz);
+        let dy = (want - d.mesh.rotation.y) % TAU;
+        if (dy > Math.PI) dy -= TAU;
+        if (dy < -Math.PI) dy += TAU;
+        d.mesh.rotation.y += dy * Math.min(1, dt * 2.5);
+      }
     }
     for (const b of butterflies) {
       b.t += dt;
-      const flap = Math.sin(b.t * 18) * 0.9;
-      b.w1.rotation.y = flap;
-      b.w2.rotation.y = -flap;
+      // wings clap up over the back, quick down-stroke
+      const flap = 0.25 + Math.sin(b.t * 19 + b.flapPh) * 1.05;
+      b.p1.rotation.z = flap;
+      b.p2.rotation.z = -flap;
+      const px = b.g.position.x, pz = b.g.position.z;
       b.g.position.x = b.base.x + Math.sin(b.t * b.spd) * 1.6;
-      b.g.position.y = b.base.y + Math.sin(b.t * b.spd * 1.7) * 0.5;
       b.g.position.z = b.base.z + Math.cos(b.t * b.spd * 0.8) * 1.6;
-      b.g.rotation.y = b.t * 0.5;
+      // bob synced to the wingbeat + slow wander
+      b.g.position.y = b.base.y + Math.sin(b.t * b.spd * 1.7) * 0.5 + Math.sin(b.t * 19 + b.flapPh + 1.2) * 0.03;
+      // face the direction of travel
+      const mdx = b.g.position.x - px, mdz = b.g.position.z - pz;
+      if (mdx * mdx + mdz * mdz > 1e-8) {
+        const want = Math.atan2(mdx, mdz);
+        let dy = (want - b.g.rotation.y) % TAU;
+        if (dy > Math.PI) dy -= TAU;
+        if (dy < -Math.PI) dy += TAU;
+        b.g.rotation.y += dy * Math.min(1, dt * 5);
+      }
     }
     for (const bd of birds) {
       bd.t += dt;
@@ -1351,6 +1510,15 @@ export function buildWorld(scene) {
     }
     if (fireflies) {
       fireflies.material.opacity = 0.55 + Math.sin(elapsed * 2.2) * 0.35;
+      // lazy per-point drift so the swarm feels alive
+      const arr = fireflies.geometry.attributes.position.array;
+      const base = fireflies.userData.base;
+      for (let i = 0; i < base.length; i += 3) {
+        arr[i] = base[i] + Math.sin(elapsed * 0.6 + i * 1.7) * 0.5;
+        arr[i + 1] = base[i + 1] + Math.sin(elapsed * 0.9 + i * 2.3) * 0.3;
+        arr[i + 2] = base[i + 2] + Math.cos(elapsed * 0.5 + i * 1.1) * 0.5;
+      }
+      fireflies.geometry.attributes.position.needsUpdate = true;
     }
   }
 
