@@ -1,0 +1,14 @@
+{
+  "name": "percy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PERCY — A Cat's Big Day Out. Cozy 3D cat adventure.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "npx serve dist"
+  },
+  "dependencies": {
+    "three": "0.170.0"
+  }
+}
