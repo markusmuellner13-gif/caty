@@ -38,7 +38,7 @@ export class Game {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.Fog(0xf5c99a, 60, 220);
+    this.scene.fog = new THREE.Fog(0xf5c99a, 70, 300);
     this.camera = new THREE.PerspectiveCamera(62, 1, 0.1, 600);
     this.camYaw = Math.PI;      // look toward -Z initially (into the bedroom)
     this.camPitch = -0.18;
@@ -154,6 +154,24 @@ export class Game {
     this.scene.add(sky);
     this._sky = sky;
     this.renderer.setClearColor(0xf5c99a);
+
+    // soft sun billboard riding on the sky dome
+    const sunCanvas = document.createElement('canvas');
+    sunCanvas.width = sunCanvas.height = 128;
+    const sg = sunCanvas.getContext('2d');
+    const grad = sg.createRadialGradient(64, 64, 6, 64, 64, 64);
+    grad.addColorStop(0, 'rgba(255,248,225,1)');
+    grad.addColorStop(0.25, 'rgba(255,226,150,0.9)');
+    grad.addColorStop(0.6, 'rgba(255,180,90,0.35)');
+    grad.addColorStop(1, 'rgba(255,160,70,0)');
+    sg.fillStyle = grad;
+    sg.fillRect(0, 0, 128, 128);
+    const sunTex = new THREE.CanvasTexture(sunCanvas);
+    sunTex.colorSpace = THREE.SRGBColorSpace;
+    const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: sunTex, transparent: true, depthWrite: false, fog: false }));
+    sunSprite.scale.setScalar(160);
+    sunSprite.position.set(0.5, 0.22, -0.8).normalize().multiplyScalar(430);
+    sky.add(sunSprite);
   }
 
   _makeCat(palette) {
@@ -794,6 +812,8 @@ export class Game {
   _updateCatVisual(dt) {
     if (this.state === 'title') return;
     this.cat.group.position.copy(this.pos);
+    const turnRate = dt > 0 ? (this.facing - (this._prevFacing ?? this.facing)) / dt : 0;
+    this._prevFacing = this.facing;
     if (this.state !== 'dead') this.cat.group.rotation.y = this.facing;
 
     let mode = 'idle';
@@ -807,7 +827,7 @@ export class Game {
     else if (hSpeed > 4.2) mode = 'run';
     else if (hSpeed > 0.5) mode = 'walk';
     else if (this.idleTime > 6) mode = 'sit';
-    this.cat.update(dt, { mode, speed: hSpeed, grounded: this.grounded });
+    this.cat.update(dt, { mode, speed: hSpeed, grounded: this.grounded, lean: -turnRate * 0.09 });
 
     // invulnerability blink
     this.cat.group.visible = this.invuln <= 0 || Math.sin(performance.now() * 0.025) > -0.4;
