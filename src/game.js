@@ -28,7 +28,8 @@ export class Game {
     this.hooks = hooks; // { onDeath, onWin, onCheckpoint, onToast, onLevelUp, onSaveChanged }
     this.state = 'title'; // title | playing | dead | won
     this.paused = false;
-    this.settings = { sensitivity: 1, invertY: false, quality: 'high', palette: 'percy' };
+    this.settings = { sensitivity: 1, invertY: false, invertX: false, quality: 'high', palette: 'percy' };
+    this.ballCool = 0;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.shadowMap.enabled = true;
@@ -215,6 +216,7 @@ export class Game {
       if (this.state !== 'playing' || this.paused) return;
       if (e.code === 'Space') { this._jumpPressed(); e.preventDefault(); }
       if (e.code === 'KeyM') { this.audio.meow(); }
+      if (e.code === 'KeyF') { this._throwBall(); }
     });
     window.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
     window.addEventListener('blur', () => { this.keys = {}; });
@@ -222,9 +224,18 @@ export class Game {
     this.canvas.addEventListener('mousemove', (e) => {
       if (document.pointerLockElement !== this.canvas) return;
       const s = 0.0024 * this.settings.sensitivity;
-      this._yawT -= e.movementX * s;
+      this._yawT -= e.movementX * s * (this.settings.invertX ? -1 : 1);
       this._pitchT = clamp(this._pitchT + e.movementY * s * (this.settings.invertY ? 1 : -1), -1.15, 0.7);
     });
+  }
+
+  _throwBall() {
+    if (this.state !== 'playing' || this.paused || this.ballCool > 0) return;
+    this.ballCool = 2.5;
+    const dx = Math.sin(this.facing), dz = Math.cos(this.facing);
+    this.world.throwBall(this.pos, dx, dz);
+    this.audio.pounce();
+    this.particles.burst(this.pos.x + dx * 0.5, this.pos.y + 0.6, this.pos.z + dz * 0.5, 5, 0xe8452f, 0.5);
   }
 
   _jumpPressed() {
@@ -556,6 +567,7 @@ export class Game {
     this.invuln = Math.max(0, this.invuln - dt);
     this.coyote = Math.max(0, this.coyote - dt);
     this.pounceT = Math.max(0, this.pounceT - dt);
+    this.ballCool = Math.max(0, this.ballCool - dt);
 
     // touch camera
     this._yawT -= this.touch.cam.x * dt * 2.4 * this.settings.sensitivity;
@@ -920,6 +932,9 @@ export class Game {
       h.prompt.classList.add('visible');
     } else if (this.swimming) {
       h.prompt.textContent = 'Percy hates water! Get out, quick!';
+      h.prompt.classList.add('visible');
+    } else if (this.world.dog.state === 'chase') {
+      h.prompt.textContent = 'F — throw the ball, the dog can\'t resist a game of fetch!';
       h.prompt.classList.add('visible');
     } else {
       h.prompt.classList.remove('visible');

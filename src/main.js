@@ -65,7 +65,7 @@ const game = new Game(canvas, audio, {
 
 // ------------------------------------------------------------ settings
 function loadSettings() {
-  let s = { music: 0.6, sfx: 0.8, sens: 1, invertY: false, quality: 'high', palette: 'percy' };
+  let s = { music: 0.6, sfx: 0.8, sens: 1, invertY: false, invertX: false, quality: 'high', palette: 'percy' };
   try { s = { ...s, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') }; } catch {}
   return s;
 }
@@ -76,6 +76,7 @@ function applySettings() {
   audio.setSfxVol(settings.sfx);
   game.settings.sensitivity = settings.sens;
   game.settings.invertY = settings.invertY;
+  game.settings.invertX = settings.invertX;
   game.applyQuality(settings.quality);
   if (game.settings.palette !== settings.palette) game.setPalette(settings.palette);
   // reflect in UI
@@ -83,6 +84,7 @@ function applySettings() {
   $('setSfx').value = settings.sfx;
   $('setSens').value = settings.sens;
   $('setInvertY').checked = settings.invertY;
+  $('setInvertX').checked = settings.invertX;
   for (const b of $('setQuality').children) b.classList.toggle('on', b.dataset.v === settings.quality);
   for (const b of $('setPalette').children) b.classList.toggle('on', b.dataset.v === settings.palette);
 }
@@ -95,6 +97,7 @@ $('setMusic').addEventListener('input', (e) => { settings.music = +e.target.valu
 $('setSfx').addEventListener('input', (e) => { settings.sfx = +e.target.value; audio.setSfxVol(settings.sfx); saveSettings(); });
 $('setSens').addEventListener('input', (e) => { settings.sens = +e.target.value; game.settings.sensitivity = settings.sens; saveSettings(); });
 $('setInvertY').addEventListener('change', (e) => { settings.invertY = e.target.checked; game.settings.invertY = settings.invertY; saveSettings(); });
+$('setInvertX').addEventListener('change', (e) => { settings.invertX = e.target.checked; game.settings.invertX = settings.invertX; saveSettings(); });
 $('setQuality').addEventListener('click', (e) => {
   const v = e.target.dataset?.v;
   if (!v) return;
@@ -303,8 +306,8 @@ if (touchMode) {
   canvas.addEventListener('touchmove', (e) => {
     for (const t of e.changedTouches) {
       if (t.identifier !== camId) continue;
-      game.camYaw -= (t.clientX - lastX) * 0.006 * game.settings.sensitivity;
-      game.camPitch = clamp(game.camPitch - (t.clientY - lastY) * 0.005 * (game.settings.invertY ? -1 : 1), -1.15, 0.7);
+      game._yawT -= (t.clientX - lastX) * 0.006 * game.settings.sensitivity * (game.settings.invertX ? -1 : 1);
+      game._pitchT = clamp(game._pitchT - (t.clientY - lastY) * 0.005 * (game.settings.invertY ? -1 : 1), -1.15, 0.7);
       lastX = t.clientX; lastY = t.clientY;
     }
     e.preventDefault();
@@ -316,6 +319,7 @@ if (touchMode) {
   $('btnJump').addEventListener('touchstart', (e) => { game._jumpPressed(); e.preventDefault(); }, { passive: false });
   $('btnSprint').addEventListener('touchstart', (e) => { game.touch.sprint = !game.touch.sprint; e.target.style.opacity = game.touch.sprint ? 1 : 0.7; e.preventDefault(); }, { passive: false });
   $('btnMeow').addEventListener('touchstart', (e) => { audio.meow(); e.preventDefault(); }, { passive: false });
+  $('btnBall').addEventListener('touchstart', (e) => { game._throwBall(); e.preventDefault(); }, { passive: false });
 }
 
 // prevent context menu / double-tap zoom weirdness

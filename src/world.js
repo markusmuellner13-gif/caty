@@ -2,6 +2,7 @@
 // barn, forest and the lake — plus all colliders, hazards and pickups.
 import * as THREE from 'three';
 import { clamp, lerp, smoothstep, rand, randInt, pick, TAU } from './util.js';
+import * as TX from './textures.js';
 
 // ---------------------------------------------------------------- terrain --
 export function groundHeight(x, z) {
@@ -17,15 +18,20 @@ export function groundHeight(x, z) {
   // Lake bowl
   const ld = Math.hypot(x, z - 295);
   h -= 5.0 * (1 - smoothstep(9, 29, ld));
+  // Duck pond east of the fields
+  const pd = Math.hypot(x - 34, z - 178);
+  h -= 2.3 * (1 - smoothstep(4, 7.8, pd));
   return h;
 }
 
 export const STREAM_WATER_Y = -0.62;
 export const LAKE_WATER_Y = -0.85;
+export const POND_WATER_Y = -0.55;
 
 export function waterLevelAt(x, z) {
   if (Math.abs(z - 150) < 3.4 && groundHeight(x, z) < STREAM_WATER_Y - 0.1) return STREAM_WATER_Y;
   if (Math.hypot(x, z - 295) < 26.5 && groundHeight(x, z) < LAKE_WATER_Y - 0.1) return LAKE_WATER_Y;
+  if (Math.hypot(x - 34, z - 178) < 8 && groundHeight(x, z) < POND_WATER_Y - 0.1) return POND_WATER_Y;
   return null;
 }
 
@@ -34,30 +40,37 @@ const M = {}; // shared materials
 function mats() {
   if (M.done) return M;
   const std = (color, rough = 0.9, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: rough, ...extra });
-  M.brick = std('#c96f4a');
-  M.brick2 = std('#b3593a');
-  M.brick3 = std('#d8a06a');
-  M.plaster = std('#efe3cf');
-  M.roof = std('#7a4a3a');
-  M.roof2 = std('#5d6570');
-  M.wood = std('#8a6242');
-  M.woodDark = std('#5f4630');
-  M.woodLight = std('#c9a36e');
-  M.fence = std('#9a7b52');
+  // painted material: procedural texture as color + bump for surface relief
+  const tex = (map, rough = 0.9, bump = 0.02, extra = {}) => {
+    const t = typeof map === 'function' ? map() : map;
+    return new THREE.MeshStandardMaterial({ map: t, bumpMap: t, bumpScale: bump, roughness: rough, ...extra });
+  };
+  const rep = (mat, x, y) => { mat.map.repeat.set(x, y); return mat; };
+
+  M.brick = rep(tex(TX.brick('#c96f4a', '#b45f3d')), 3, 2);
+  M.brick2 = rep(tex(TX.brick('#b3593a', '#9c4c32')), 3, 2);
+  M.brick3 = rep(tex(TX.brick('#d8a06a', '#c48c55')), 3, 2);
+  M.plaster = rep(tex(TX.stucco, 0.95, 0.012), 2, 2);
+  M.roof = rep(tex(TX.shingles('#7a4a3a', '#5c352a'), 0.9, 0.03), 3, 3);
+  M.roof2 = rep(tex(TX.shingles('#5d6570', '#454c58'), 0.9, 0.03), 3, 3);
+  M.wood = rep(tex(TX.planks('#8a6242')), 1.5, 1.5);
+  M.woodDark = rep(tex(TX.planks('#5f4630')), 1.5, 1.5);
+  M.woodLight = rep(tex(TX.planks('#c9a36e')), 1.5, 1.5);
+  M.fence = rep(tex(TX.planks('#9a7b52')), 4, 1);
   M.hedge = std('#3f7d3a');
   M.hedgeDark = std('#356b31');
   M.leaf = std('#4f9143');
   M.leafDark = std('#3c7a38');
   M.pine = std('#2f6b3c');
-  M.trunk = std('#6b4a2f');
-  M.stone = std('#8d8d94');
-  M.road = std('#3d4046', 0.95);
-  M.sidewalk = std('#9a9aa0', 0.95);
+  M.trunk = rep(tex(TX.bark, 0.95, 0.03), 1.5, 1.5);
+  M.stone = rep(tex(TX.stone, 0.95, 0.025), 1.5, 1.5);
+  M.road = rep(tex(TX.asphalt, 0.96, 0.02), 26, 2);
+  M.sidewalk = rep(tex(TX.pavement, 0.95, 0.025), 30, 1);
   M.line = std('#e8e4d8', 0.8);
   M.metal = std('#7d8590', 0.4, { metalness: 0.6 });
   M.white = std('#f5f2ea');
-  M.hay = std('#d9b45c');
-  M.hayDark = std('#c29c44');
+  M.hay = rep(tex(TX.straw('#d9b45c', 'rgba(140,100,40,0.6)'), 0.95, 0.02), 2, 2);
+  M.hayDark = rep(tex(TX.straw('#c29c44', 'rgba(120,84,30,0.6)'), 0.95, 0.02), 2, 2);
   M.glass = new THREE.MeshStandardMaterial({ color: '#a8d4e8', roughness: 0.1, metalness: 0.3, transparent: true, opacity: 0.5 });
   M.done = true;
   return M;
@@ -158,7 +171,7 @@ export function buildWorld(scene) {
 
   // ------------------------------------------------------------ terrain mesh
   {
-    const W = 170, D = 370, SX = 170, SZ = 370;
+    const W = 230, D = 440, SX = 200, SZ = 400;
     const geo = new THREE.PlaneGeometry(W, D, SX, SZ);
     geo.rotateX(-Math.PI / 2);
     const posA = geo.attributes.position;
@@ -175,7 +188,7 @@ export function buildWorld(scene) {
     const mud = new THREE.Color('#6f5b3e');
     for (let i = 0; i < posA.count; i++) {
       const x = posA.getX(i);
-      let z = posA.getZ(i) + 155; // shift: plane covers z -30..340
+      let z = posA.getZ(i) + 180; // shift: plane covers z -40..400
       posA.setZ(i, z);
       const h = groundHeight(x, z);
       posA.setY(i, h);
@@ -193,6 +206,9 @@ export function buildWorld(scene) {
       // stream banks
       const sd = Math.abs(z - 150);
       if (sd < 4.5) c.lerp(mud, smoothstep(4.5, 1.5, sd));
+      // pond banks
+      const pdd = Math.hypot(x - 34, z - 178);
+      if (pdd < 9.5) c.lerp(mud, smoothstep(9.5, 5.5, pdd));
       // dirt path along the route through the fields
       if (z > 100 && z < 270) {
         const px = Math.sin(z * 0.06) * 2.2;
@@ -205,7 +221,12 @@ export function buildWorld(scene) {
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
-    const ground = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 }));
+    // grass detail texture multiplies over the vertex colors — kills the flat look
+    const detail = TX.grassDetail();
+    detail.repeat.set(110, 200);
+    const ground = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+      vertexColors: true, roughness: 0.95, map: detail, bumpMap: detail, bumpScale: 0.06,
+    }));
     ground.receiveShadow = true;
     statics.add(ground);
   }
@@ -217,10 +238,34 @@ export function buildWorld(scene) {
     lake.rotation.x = -Math.PI / 2;
     lake.position.set(0, LAKE_WATER_Y, 295);
     statics.add(lake);
-    const stream = new THREE.Mesh(new THREE.PlaneGeometry(124, 6.6, 96, 10), makeWaterMat('#4098c8', 0.7));
+    const stream = new THREE.Mesh(new THREE.PlaneGeometry(160, 6.6, 110, 10), makeWaterMat('#4098c8', 0.7));
     stream.rotation.x = -Math.PI / 2;
     stream.position.set(0, STREAM_WATER_Y, 150);
     statics.add(stream);
+    // duck pond in the eastern fields
+    const pond = new THREE.Mesh(new THREE.RingGeometry(0.02, 8, 36, 8), makeWaterMat('#4aa2c4', 0.75));
+    pond.rotation.x = -Math.PI / 2;
+    pond.position.set(34, POND_WATER_Y, 178);
+    statics.add(pond);
+    // pond reeds + lily pads
+    for (let i = 0; i < 26; i++) {
+      const a = rand(TAU), rr = rand(7.2, 9.5);
+      const x = 34 + Math.sin(a) * rr, z = 178 + Math.cos(a) * rr;
+      const gy = groundHeight(x, z);
+      if (gy < POND_WATER_Y) continue;
+      const reed = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.045, rand(0.8, 1.4)), M.hedgeDark);
+      reed.position.set(x, gy + 0.5, z);
+      reed.rotation.z = rand(-0.14, 0.14);
+      statics.add(reed);
+    }
+    for (let i = 0; i < 6; i++) {
+      const a = rand(TAU), rr = rand(1, 5.5);
+      const pad = new THREE.Mesh(new THREE.CircleGeometry(rand(0.3, 0.5), 9, 0.5, 5.6),
+        new THREE.MeshStandardMaterial({ color: '#4f9143', roughness: 0.8, side: THREE.DoubleSide }));
+      pad.rotation.x = -Math.PI / 2;
+      pad.position.set(34 + Math.sin(a) * rr, POND_WATER_Y + 0.02, 178 + Math.cos(a) * rr);
+      statics.add(pad);
+    }
   }
 
   // ------------------------------------------------------------ row houses
@@ -524,14 +569,14 @@ export function buildWorld(scene) {
 
   // ------------------------------------------------------------- street
   {
-    box(0, -0.06, 82, 120, 0.24, 4.4, M.sidewalk, { name: 'sidewalk', shadow: false });
-    box(0, -0.06, 98, 120, 0.24, 4.4, M.sidewalk, { name: 'sidewalk', shadow: false });
-    const road = new THREE.Mesh(new THREE.PlaneGeometry(120, 11.6), M.road);
+    box(0, -0.06, 82, 156, 0.24, 4.4, M.sidewalk, { name: 'sidewalk', shadow: false });
+    box(0, -0.06, 98, 156, 0.24, 4.4, M.sidewalk, { name: 'sidewalk', shadow: false });
+    const road = new THREE.Mesh(new THREE.PlaneGeometry(156, 11.6), M.road);
     road.rotation.x = -Math.PI / 2;
     road.position.set(0, 0.02, 90);
     road.receiveShadow = true;
     statics.add(road);
-    for (let x = -58; x < 60; x += 4) {
+    for (let x = -76; x < 78; x += 4) {
       if (Math.abs(x) < 4) continue; // gap at the zebra crossing
       const dash = new THREE.Mesh(new THREE.PlaneGeometry(2, 0.3), M.line);
       dash.rotation.x = -Math.PI / 2;
@@ -560,7 +605,7 @@ export function buildWorld(scene) {
       cylinderCollider(-3, 81.5, 0.1, 0, 2.4);
     }
     // lamp posts
-    for (const [lx, lz] of [[-12, 84.5], [12, 95.5], [-36, 95.5], [36, 84.5]]) {
+    for (const [lx, lz] of [[-12, 84.5], [12, 95.5], [-36, 95.5], [36, 84.5], [-60, 84.5], [60, 95.5]]) {
       const post = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 4.6, 8), M.metal);
       post.position.set(lx, 2.3, lz);
       post.castShadow = true;
@@ -578,9 +623,9 @@ export function buildWorld(scene) {
   }
 
   // ------------------------------------------------------------- fields
-  // sunflower patch
-  for (let i = 0; i < 26; i++) {
-    const x = rand(-30, -12), z = rand(108, 130);
+  // sunflower patches
+  for (let i = 0; i < 44; i++) {
+    const x = i < 26 ? rand(-30, -12) : rand(28, 46), z = i < 26 ? rand(108, 130) : rand(110, 126);
     const gy = groundHeight(x, z);
     const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 1.7), M.hedgeDark);
     stem.position.set(x, gy + 0.85, z);
@@ -597,14 +642,14 @@ export function buildWorld(scene) {
     const stalk = new THREE.ConeGeometry(0.05, 0.9, 4);
     stalk.translate(0, 0.45, 0);
     const wmat = windify(new THREE.MeshStandardMaterial({ color: '#d9b45c', roughness: 1 }), 1.3, 0.85);
-    const WN = 700;
+    const WN = 1050;
     const winst = new THREE.InstancedMesh(stalk, wmat, WN);
     const wm4 = new THREE.Matrix4();
     const wq = new THREE.Quaternion();
     const weu = new THREE.Euler();
     const wcol = new THREE.Color();
     let wn = 0, wguard = 0;
-    const patches = [[22, 118, 9], [30, 138, 8], [-28, 160, 9], [24, 172, 10]];
+    const patches = [[22, 118, 9], [30, 138, 8], [-28, 160, 9], [24, 172, 10], [-46, 142, 9], [52, 146, 10]];
     while (wn < WN && wguard++ < 8000) {
       const [px, pz, pr] = patches[wn % patches.length];
       const a = rand(TAU), rr = Math.sqrt(Math.random()) * pr;
@@ -686,8 +731,8 @@ export function buildWorld(scene) {
     colliders.push({ minX: -13.45, maxX: -12.55, minY: -1, maxY: 0.42, minZ: 145.8, maxZ: 154.2, climb: false, name: 'log' });
   }
   // cattails + rocks along the stream banks
-  for (let i = 0; i < 46; i++) {
-    const x = rand(-50, 50);
+  for (let i = 0; i < 64; i++) {
+    const x = rand(-72, 72);
     if (x > -1 && x < 6) continue; // keep the crossing clear
     const z = 150 + pick([-1, 1]) * rand(3.2, 5);
     const gy = groundHeight(x, z);
@@ -922,7 +967,7 @@ export function buildWorld(scene) {
     const blade = new THREE.ConeGeometry(0.06, 0.55, 4);
     blade.translate(0, 0.24, 0);
     const gmat = windify(new THREE.MeshStandardMaterial({ color: '#79a83f', roughness: 1 }), 1, 1.15);
-    const COUNT = 2600;
+    const COUNT = 4200;
     const inst = new THREE.InstancedMesh(blade, gmat, COUNT);
     const m4 = new THREE.Matrix4();
     const q = new THREE.Quaternion();
@@ -930,7 +975,7 @@ export function buildWorld(scene) {
     const col = new THREE.Color();
     let n = 0, guard = 0;
     while (n < COUNT && guard++ < 20000) {
-      const x = rand(-55, 55), z = rand(100, 268);
+      const x = rand(-74, 74), z = rand(100, 274);
       if (Math.abs(z - 150) < 4) continue;
       if (waterLevelAt(x, z) !== null) continue;
       const gy = groundHeight(x, z);
@@ -949,19 +994,87 @@ export function buildWorld(scene) {
   }
 
   // world bounds (invisible)
-  box(0, 4, -19, 140, 12, 1, M.hedge, { noMesh: true });
-  box(0, 4, 330, 140, 12, 1, M.hedge, { noMesh: true });
-  box(-58, 4, 155, 1, 12, 360, M.hedge, { noMesh: true });
-  box(58, 4, 155, 1, 12, 360, M.hedge, { noMesh: true });
+  box(0, 4, -19, 170, 12, 1, M.hedge, { noMesh: true });
+  box(0, 4, 385, 170, 12, 1, M.hedge, { noMesh: true });
+  box(-78, 4, 183, 1, 12, 410, M.hedge, { noMesh: true });
+  box(78, 4, 183, 1, 12, 410, M.hedge, { noMesh: true });
   // visible bushes along field bounds
-  for (let z = 104; z < 326; z += rand(7, 12)) {
+  for (let z = -6; z < 380; z += rand(7, 12)) {
     for (const s of [-1, 1]) {
-      const x = 56.5 * s + rand(-1.5, 1.5);
+      const x = 76.5 * s + rand(-1.5, 1.5);
       const b = new THREE.Mesh(new THREE.SphereGeometry(rand(1.6, 3), 8, 6), Math.random() < 0.5 ? M.hedge : M.hedgeDark);
       b.position.set(x, groundHeight(x, z) + 0.6, z);
       b.castShadow = true;
       statics.add(b);
     }
+  }
+
+  // ---------------------------------------------- bigger world: side content
+  // neighbour gardens either side of the hedged corridor
+  for (const [tx, tz, ts] of [[-24, 12, 1.2], [26, 18, 1.0], [-38, 30, 1.4], [40, 42, 1.1],
+    [-30, 55, 1.0], [34, 62, 1.3], [-48, 48, 1.2], [50, 26, 1.2], [-44, 70, 1.0], [46, 74, 1.1]]) {
+    tree(tx + rand(-2, 2), tz + rand(-2, 2), ts, 'oak');
+  }
+  for (const [fx, fz] of [[-26, 24], [30, 36], [-40, 58], [42, 12]]) flowerBed(fx, fz, 3.4, 2);
+  // apple orchard west of the fields
+  for (let i = 0; i < 6; i++) {
+    const ox = -46 + (i % 3) * 8 + rand(-1, 1), oz = 118 + Math.floor(i / 3) * 10 + rand(-1, 1);
+    tree(ox, oz, 1.0, 'oak');
+    const gy = groundHeight(ox, oz);
+    for (let a = 0; a < 5; a++) {
+      const apple = new THREE.Mesh(new THREE.SphereGeometry(0.09, 7, 6),
+        new THREE.MeshStandardMaterial({ color: pick(['#d93b2f', '#e8642f']), roughness: 0.5 }));
+      apple.position.set(ox + rand(-1.3, 1.3), gy + rand(3, 4.6), oz + rand(-1.3, 1.3));
+      statics.add(apple);
+    }
+  }
+  // old tractor by the barn
+  {
+    const tx2 = 27, tz2 = 196, gy = groundHeight(tx2, tz2);
+    const red = new THREE.MeshStandardMaterial({ color: '#b8402e', roughness: 0.6, metalness: 0.2 });
+    box(tx2, gy + 1.0, tz2, 1.7, 1.1, 3.0, red, { name: 'tractor' });
+    box(tx2, gy + 1.95, tz2 - 0.7, 1.5, 0.9, 1.3, red, { noCollide: true });      // cab
+    box(tx2, gy + 2.0, tz2 - 0.7, 1.2, 0.62, 1.0, M.glass, { noCollide: true });  // cab glass
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.9, 6), M.metal);
+    pipe.position.set(tx2 + 0.5, gy + 1.9, tz2 + 1.1);
+    statics.add(pipe);
+    const wheelM = new THREE.MeshStandardMaterial({ color: '#1c1e22', roughness: 0.9 });
+    for (const [wx, wz, wr] of [[-1, -0.9, 0.85], [1, -0.9, 0.85], [-0.9, 1.15, 0.45], [0.9, 1.15, 0.45]]) {
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(wr, wr, 0.4, 14), wheelM);
+      wheel.rotation.z = Math.PI / 2;
+      wheel.position.set(tx2 + wx, gy + wr, tz2 + wz);
+      wheel.castShadow = true;
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(wr * 0.4, wr * 0.4, 0.42, 8),
+        new THREE.MeshStandardMaterial({ color: '#d8b13c', roughness: 0.5 }));
+      hub.rotation.z = Math.PI / 2;
+      hub.position.copy(wheel.position);
+      statics.add(wheel, hub);
+    }
+    colliders.push({ minX: tx2 - 2, maxX: tx2 + 2, minY: gy, maxY: gy + 1.7, minZ: tz2 - 1.6, maxZ: tz2 + 1.6, climb: true, name: 'tractor' });
+  }
+  // extra hay bales + pumpkins across the wider fields
+  hayBale(32, 148, 0.8);
+  hayBale(-30, 196, 1.9);
+  hayBale(44, 168, 0.3);
+  for (const [px2, pz2] of [[12.4, 197], [7, 202.4]]) {
+    const gy = groundHeight(px2, pz2);
+    const pump = new THREE.Mesh(new THREE.SphereGeometry(rand(0.3, 0.4), 10, 8),
+      new THREE.MeshStandardMaterial({ color: '#e07a2e', roughness: 0.8 }));
+    pump.scale.y = 0.75;
+    pump.position.set(px2, gy + 0.22, pz2);
+    pump.castShadow = true;
+    statics.add(pump);
+  }
+  // deeper forest + wooded backdrop behind the lake
+  const extraPines = [
+    [-32, 224], [34, 230], [-38, 246], [38, 252], [-30, 262], [30, 266], [-44, 236], [44, 244],
+    [-24, 270], [26, 272], [-52, 252], [52, 232], [-60, 240], [60, 258], [-36, 216], [40, 220],
+  ];
+  for (const [tx, tz] of extraPines) tree(tx + rand(-2, 2), tz + rand(-2, 2), rand(1.0, 1.7), 'pine');
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI - Math.PI / 2;
+    const x = Math.sin(a) * rand(34, 62), z = 322 + Math.abs(Math.cos(a)) * rand(20, 48);
+    tree(x, z, rand(1.2, 1.9), Math.random() < 0.6 ? 'pine' : 'oak');
   }
 
   // ================================================================ pickups
@@ -1164,6 +1277,31 @@ export function buildWorld(scene) {
     scene.add(dog.group);
     dog.waypoints = [[6, 48], [-8, 52], [-4, 66], [8, 60]];
     dog.yard = { minX: -12.5, maxX: 12.5, minZ: 40, maxZ: 74.5 };
+    dog.sniffT = 0;
+  }
+
+  // ============================================================== fetch ball
+  // Percy can throw a ball (F) — the dog can't resist chasing it.
+  const ball = { mesh: new THREE.Group(), vel: new THREE.Vector3(), active: false, held: false };
+  {
+    const core = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 10),
+      new THREE.MeshStandardMaterial({ color: '#e8452f', roughness: 0.55 }));
+    const band = new THREE.Mesh(new THREE.TorusGeometry(0.13, 0.022, 6, 18),
+      new THREE.MeshStandardMaterial({ color: '#f5f2ea', roughness: 0.6 }));
+    band.rotation.x = Math.PI / 2 + 0.5;
+    ball.mesh.add(core, band);
+    ball.mesh.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    ball.mesh.visible = false;
+    scene.add(ball.mesh);
+  }
+  function throwBall(from, dirX, dirZ) {
+    ball.active = true;
+    ball.held = false;
+    ball.mesh.visible = true;
+    ball.mesh.position.set(from.x + dirX * 0.4, from.y + 0.55, from.z + dirZ * 0.4);
+    ball.vel.set(dirX * 8.5, 4.8, dirZ * 8.5);
+    // a fresh throw resets whatever game the dog was playing
+    if (dog.state === 'fetch' || dog.state === 'sniff' || dog.state === 'carry') dog.state = 'patrol';
   }
 
   // ================================================================== fish
@@ -1191,9 +1329,9 @@ export function buildWorld(scene) {
   fishRing.position.set(FISH_CENTER.x, LAKE_WATER_Y + 0.06, FISH_CENTER.z);
   scene.add(fishRing);
 
-  // ducks
+  // ducks (two on the lake, one on the pond)
   const ducks = [];
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < 3; i++) {
     const g = new THREE.Group();
     const bodyDk = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 8), new THREE.MeshStandardMaterial({ color: '#e8e4d8', roughness: 0.8 }));
     bodyDk.scale.set(1, 0.75, 1.35);
@@ -1203,9 +1341,10 @@ export function buildWorld(scene) {
     beak.rotation.x = Math.PI / 2;
     beak.position.set(0, 0.28, 0.45);
     g.add(bodyDk, headDk, beak);
-    g.position.set(rand(-8, 8), LAKE_WATER_Y + 0.1, 295 + rand(-6, 6));
+    const onPond = i === 2;
+    g.position.set(onPond ? 34 + rand(-2, 2) : rand(-8, 8), (onPond ? POND_WATER_Y : LAKE_WATER_Y) + 0.1, (onPond ? 178 : 295) + rand(-4, 4));
     scene.add(g);
-    ducks.push({ mesh: g, angle: rand(TAU), t: rand(10) });
+    ducks.push({ mesh: g, angle: rand(TAU), t: rand(10), waterY: onPond ? POND_WATER_Y : LAKE_WATER_Y, home: onPond ? [34, 178, 5.5] : [0, 295, 20] });
   }
 
   // ============================================================ butterflies
@@ -1215,7 +1354,7 @@ export function buildWorld(scene) {
     const wingG = new THREE.PlaneGeometry(0.16, 0.22);
     wingG.rotateX(-Math.PI / 2);
     wingG.translate(0.09, 0, 0);
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 18; i++) {
       const g = new THREE.Group();
       const matB = new THREE.MeshBasicMaterial({ color: pick(['#f2b134', '#e85d75', '#7ab8f5', '#c86bd9']), side: THREE.DoubleSide });
       const p1 = new THREE.Group(), p2 = new THREE.Group();
@@ -1227,7 +1366,7 @@ export function buildWorld(scene) {
         new THREE.MeshBasicMaterial({ color: '#2c2620' }));
       bodyB.rotation.x = Math.PI / 2;
       g.add(p1, p2, bodyB);
-      const x = rand(-30, 30), z = rand(10, 260);
+      const x = rand(-55, 55), z = rand(10, 270);
       g.position.set(x, Math.max(groundHeight(x, z), 0) + rand(0.6, 2), z);
       scene.add(g);
       butterflies.push({ g, p1, p2, base: g.position.clone(), t: rand(20), spd: rand(0.5, 1.2), flapPh: rand(TAU) });
@@ -1237,10 +1376,10 @@ export function buildWorld(scene) {
   // fireflies (forest & lake, dusk vibes)
   let fireflies;
   {
-    const N = 90;
+    const N = 130;
     const posF = new Float32Array(N * 3);
     for (let i = 0; i < N; i++) {
-      const x = rand(-25, 25), z = rand(220, 315);
+      const x = rand(-40, 40), z = rand(215, 330);
       posF[i * 3] = x;
       posF[i * 3 + 1] = Math.max(groundHeight(x, z), LAKE_WATER_Y) + rand(0.4, 2.6);
       posF[i * 3 + 2] = z;
@@ -1255,7 +1394,7 @@ export function buildWorld(scene) {
 
   // clouds — soft, flat-bottomed
   const clouds = [];
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 14; i++) {
     const g = new THREE.Group();
     const cm = new THREE.MeshStandardMaterial({ color: '#fff6ea', roughness: 1, transparent: true, opacity: 0.85 });
     for (let j = 0; j < randInt(4, 6); j++) {
@@ -1287,7 +1426,7 @@ export function buildWorld(scene) {
 
   // birds crossing the sky
   const birds = [];
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 7; i++) {
     const g = new THREE.Group();
     const mB = new THREE.MeshBasicMaterial({ color: '#2c3440', side: THREE.DoubleSide });
     const w1 = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.28), mB);
@@ -1343,7 +1482,7 @@ export function buildWorld(scene) {
       if (lane.next <= 0 && cars.length < 8) {
         lane.next = rand(2.2, 5.2);
         const mesh = makeCar();
-        mesh.position.set(-66 * lane.dir, 0.05, lane.z);
+        mesh.position.set(-84 * lane.dir, 0.05, lane.z);
         // cars travel along X; the model faces +Z, so turn it into the lane
         mesh.rotation.y = lane.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
         carsGroup.add(mesh);
@@ -1372,12 +1511,37 @@ export function buildWorld(scene) {
       if (Math.abs(dz) < 1.55 && Math.abs(dx) < 2.45 && playerPos.y < 1.6) {
         cb.carHit();
       }
-      if (Math.abs(car.mesh.position.x) > 68) {
+      if (Math.abs(car.mesh.position.x) > 86) {
         carsGroup.remove(car.mesh);
         cars.splice(i, 1);
       }
     }
     cb.carProximity(nearestCar);
+
+    // ---- fetch ball physics ----
+    if (ball.active && !ball.held) {
+      const bp = ball.mesh.position;
+      ball.vel.y -= 19 * dt;
+      bp.x += ball.vel.x * dt;
+      bp.y += ball.vel.y * dt;
+      bp.z += ball.vel.z * dt;
+      const water = waterLevelAt(bp.x, bp.z);
+      const gy = Math.max(groundHeight(bp.x, bp.z), water === null ? -99 : water) + 0.13;
+      if (bp.y <= gy) {
+        bp.y = gy;
+        if (ball.vel.y < -1.6) {          // bounce
+          ball.vel.y = -ball.vel.y * 0.48;
+          ball.vel.x *= 0.78;
+          ball.vel.z *= 0.78;
+        } else {                          // roll out
+          ball.vel.y = 0;
+          const f = Math.exp(-2.4 * dt);
+          ball.vel.x *= f;
+          ball.vel.z *= f;
+        }
+      }
+      ball.mesh.rotation.x += Math.hypot(ball.vel.x, ball.vel.z) * dt / 0.13;
+    }
 
     // ---- dog ----
     {
@@ -1389,8 +1553,38 @@ export function buildWorld(scene) {
       dog.biteCool = Math.max(0, dog.biteCool - dt);
       dog.barkCool = Math.max(0, dog.barkCool - dt);
 
+      const bp = ball.mesh.position;
+      const ballInReach = ball.active && !ball.held &&
+        bp.x > dog.yard.minX - 4 && bp.x < dog.yard.maxX + 4 &&
+        bp.z > dog.yard.minZ - 4 && bp.z < dog.yard.maxZ + 4;
+
       let target, speed;
-      if (playerInYard && pdist < 14) {
+      if (dog.state === 'sniff') {
+        // nose down over the prize
+        dog.sniffT -= dt;
+        target = [dp.x, dp.z];
+        speed = 0;
+        if (dog.sniffT <= 0) { dog.state = 'carry'; ball.held = true; }
+      } else if (dog.state === 'carry') {
+        // trot the ball back to the doghouse
+        target = [9, 51.9];
+        speed = 3.2;
+        if (Math.hypot(9 - dp.x, 51.9 - dp.z) < 1.3) {
+          ball.held = false;
+          ball.active = false;
+          ball.vel.set(0, 0, 0);
+          ball.mesh.position.set(dp.x - Math.sin(dog.group.rotation.y) * 0.8,
+            Math.max(groundHeight(dp.x, dp.z), 0) + 0.13,
+            dp.z - Math.cos(dog.group.rotation.y) * 0.8);
+          dog.state = 'patrol';
+        }
+      } else if (ballInReach) {
+        // a thrown ball beats everything — even a cat
+        if (dog.state !== 'fetch') { dog.state = 'fetch'; cb.bark(); dog.barkCool = 1.5; }
+        target = [clamp(bp.x, dog.yard.minX, dog.yard.maxX), clamp(bp.z, dog.yard.minZ, dog.yard.maxZ)];
+        speed = 6.2;
+        if (Math.hypot(bp.x - dp.x, bp.z - dp.z) < 0.9) { dog.state = 'sniff'; dog.sniffT = 1.7; }
+      } else if (playerInYard && pdist < 14) {
         if (dog.state !== 'chase' && dog.barkCool <= 0) { cb.bark(); dog.barkCool = 2.4; }
         dog.state = 'chase';
         target = [playerPos.x, playerPos.z];
@@ -1401,6 +1595,11 @@ export function buildWorld(scene) {
         target = dog.waypoints[dog.wpIdx];
         speed = 2.0;
         if (Math.hypot(target[0] - dp.x, target[1] - dp.z) < 1) dog.wpIdx = (dog.wpIdx + 1) % dog.waypoints.length;
+      }
+      // carried ball rides at the dog's snout
+      if (ball.held) {
+        ball.mesh.position.set(dp.x + Math.sin(dog.group.rotation.y) * 0.82, 0.62,
+          dp.z + Math.cos(dog.group.rotation.y) * 0.82);
       }
       const tdx = target[0] - dp.x, tdz = target[1] - dp.z;
       const tdist = Math.hypot(tdx, tdz);
@@ -1419,8 +1618,9 @@ export function buildWorld(scene) {
         dog.legPhase += dt * speed * 3;
       }
       // trot: diagonal leg pairs swing + lift, body and head bounce with the gait
+      const excited = dog.state === 'chase' || dog.state === 'fetch' || dog.state === 'sniff' || dog.state === 'carry';
       const ph = dog.legPhase;
-      const gaitAmp = dog.state === 'chase' ? 0.85 : 0.55;
+      const gaitAmp = speed > 4 ? 0.85 : 0.55;
       for (let li = 0; li < 4; li++) {
         // legs [FR, FL, HR, HL] → diagonal pairs (FR+HL, FL+HR)
         const legOff = (li === 0 || li === 3) ? 0 : Math.PI;
@@ -1428,21 +1628,23 @@ export function buildWorld(scene) {
         dog.legs[li].rotation.x = moving ? sw * gaitAmp : 0;
         dog.legs[li].position.y = 0.25 + (moving ? Math.max(0, Math.cos(ph + legOff)) * 0.06 : 0);
       }
-      const bounce = moving ? Math.abs(Math.sin(ph)) * (dog.state === 'chase' ? 0.06 : 0.03) : Math.sin(elapsed * 2.2) * 0.012;
+      const bounce = moving ? Math.abs(Math.sin(ph)) * (speed > 4 ? 0.06 : 0.03) : Math.sin(elapsed * 2.2) * 0.012;
       dog.body.position.y = 0.52 + bounce;
-      dog.head.position.y = 0.72 + bounce * 0.7 + (moving ? Math.sin(ph * 2) * 0.015 : 0);
+      // sniffing: nose right down over the ball
+      const headDrop = dog.state === 'sniff' ? 0.26 + Math.sin(elapsed * 7) * 0.03 : 0;
+      dog.head.position.y = 0.72 + bounce * 0.7 + (moving ? Math.sin(ph * 2) * 0.015 : 0) - headDrop;
       dog.snout.position.y = dog.head.position.y - 0.06;
-      // chase posture: head low and forward, ears pinned; patrol: perky
-      dog.head.position.z = dog.state === 'chase' ? 0.58 : 0.52;
+      // chase/fetch posture: head low and forward, ears pinned; patrol: perky
+      dog.head.position.z = excited ? 0.58 : 0.52;
       dog.snout.position.z = dog.head.position.z + 0.22;
       for (let ei = 0; ei < 2; ei++) {
         const flop = moving ? Math.sin(ph + ei * 2) * 0.25 : Math.sin(elapsed * 1.5 + ei) * 0.06;
-        dog.ears[ei].rotation.x = (dog.state === 'chase' ? -0.5 : -0.1) + flop;
-        dog.ears[ei].position.y = 0.9 + bounce * 0.7;
+        dog.ears[ei].rotation.x = (excited ? -0.5 : -0.1) + flop;
+        dog.ears[ei].position.y = 0.9 + bounce * 0.7 - headDrop;
       }
-      // tail: high and whipping in a chase, relaxed wag on patrol
-      dog.tail.rotation.x = dog.state === 'chase' ? -0.35 : -0.9;
-      dog.tail.rotation.y = Math.sin(elapsed * (dog.state === 'chase' ? 16 : 5)) * (dog.state === 'chase' ? 0.55 : 0.35);
+      // tail: high and whipping when excited, relaxed wag on patrol
+      dog.tail.rotation.x = excited ? -0.35 : -0.9;
+      dog.tail.rotation.y = Math.sin(elapsed * (excited ? 16 : 5)) * (excited ? 0.55 : 0.35);
       if (dog.state === 'chase' && pdist < 1.1 && dog.biteCool <= 0 && playerPos.y < 1.4) {
         dog.biteCool = 1.3;
         cb.dogBite(pdx, pdz);
@@ -1472,8 +1674,15 @@ export function buildWorld(scene) {
       const dvx = Math.sin(d.angle) * 0.5, dvz = Math.cos(d.angle * 0.7) * 0.4;
       d.mesh.position.x += dvx * dt;
       d.mesh.position.z += dvz * dt;
+      // stay on their own water
+      const hdx = d.mesh.position.x - d.home[0], hdz = d.mesh.position.z - d.home[1];
+      const hd = Math.hypot(hdx, hdz);
+      if (hd > d.home[2]) {
+        d.mesh.position.x -= (hdx / hd) * (hd - d.home[2]);
+        d.mesh.position.z -= (hdz / hd) * (hd - d.home[2]);
+      }
       // ride the same swell the water shader draws, plus a paddling waddle
-      d.mesh.position.y = LAKE_WATER_Y + 0.1 + Math.sin(elapsed * 1.35 + d.mesh.position.x * 0.55) * 0.035;
+      d.mesh.position.y = d.waterY + 0.1 + Math.sin(elapsed * 1.35 + d.mesh.position.x * 0.55) * 0.035;
       d.mesh.rotation.z = Math.sin(d.t * 3.2) * 0.05;
       if (dvx * dvx + dvz * dvz > 1e-6) {
         const want = Math.atan2(dvx, dvz);
@@ -1543,7 +1752,7 @@ export function buildWorld(scene) {
   return {
     colliders, pickups, checkpoints, trampolines,
     groundHeight, waterLevelAt, update,
-    setBeaconTarget, setBeaconVisible,
+    setBeaconTarget, setBeaconVisible, throwBall, ball,
     dog, cars, fishes, fishRing,
     FISH_CENTER, PIER_END,
     startPos: new THREE.Vector3(-4.4, 3.62, -7.6), // on the bed
