@@ -239,9 +239,10 @@ export function createCat(paletteKey = 'percy') {
     paw.scale.set(1, 0.6, 1.3);
     knee.add(paw);
     legs.push({
-      pivot, knee, front: d.front, side: Math.sign(d.x),
+      pivot, knee, paw, front: d.front, side: Math.sign(d.x),
       // current (damped) foot target, relative to the hip pivot
       tz: d.front ? 0.02 : -0.02, ty: d.front ? -0.31 : -0.3,
+      lift: 0,   // 0 = foot planted (paw flat), 1 = fully lifted (paw droops)
     });
   }
 
@@ -287,7 +288,7 @@ export function createCat(paletteKey = 'percy') {
   let blink = 0, nextBlink = 2;
   let prevGrounded = true, squash = 0;
   let groomClock = 0, grooming = 0, stretchT = 0, sinceStretch = 0;
-  let earTwitch = 0, flickT = 0;
+  let earTwitch = 0, flickT = 0, sitT = 0;
   let gaitT = 0;
   const off = OFF_WALK.slice();   // damped per-leg phase offsets
   let duty = DUTY_WALK;
@@ -303,7 +304,6 @@ export function createCat(paletteKey = 'percy') {
     nextBlink -= dt;
     if (nextBlink <= 0) { blink = Math.random() < 0.25 ? 0.35 : 0.12; nextBlink = 1.5 + Math.random() * 4.5; }
     blink = Math.max(0, blink - dt);
-    for (const e of eyes) e.scale.y = blink > 0 ? 0.12 : 1;
 
     // landing squash & recovery
     if (S.grounded && !prevGrounded) squash = 0.16;
@@ -337,6 +337,7 @@ export function createCat(paletteKey = 'percy') {
         l.tz = damp(l.tz, l.front ? 0.1 : -0.12, 6, dt);
         l.ty = damp(l.ty, -0.16, 6, dt);
         solveLeg(l);
+        l.paw.rotation.x = damp(l.paw.rotation.x, 0.3, 6, dt);
       }
       neck.rotation.x = damp(neck.rotation.x, 0.4, 6, dt);
       for (const e of eyes) e.scale.y = 0.08;
@@ -348,19 +349,22 @@ export function createCat(paletteKey = 'percy') {
     let bodyY = 0, bodyPitch = 0, bodyRoll = clamp(S.lean || 0, -0.35, 0.35);
     let chestFlex = 0, rearFlex = 0;
     let neckPitch = 0, headYaw = null, headPitch = 0;
-    let earFlat = 0;
+    let earFlat = 0, sleepy = 0, stretchZ = 1;
     let tailLift = 0.35, tailSway = 0.28, tailFreq = 1.6, tailCurl = 0.12;
-    // per-leg foot targets (relative to hips)
+    // per-leg foot targets (relative to hips) + lift factor for paw droop
     const T = [
       { tz: 0.02, ty: -0.31 }, { tz: 0.02, ty: -0.31 },
       { tz: -0.02, ty: -0.3 }, { tz: -0.02, ty: -0.3 },
     ];
+    const L = [0, 0, 0, 0];
 
     const locomoting = S.mode === 'walk' || S.mode === 'run';
     if (S.mode !== 'idle') { groomClock = 0; grooming = 0; stretchT = 0; }
+    if (S.mode !== 'sit') sitT = 0;
 
     switch (S.mode) {
       case 'sit': {
+        sitT += dt;
         bodyY = -0.1;
         bodyPitch = -0.55;
         neckPitch = 0.5;
@@ -372,6 +376,21 @@ export function createCat(paletteKey = 'percy') {
         flickT -= dt;
         if (flickT <= 0) { flickT = 2 + Math.random() * 4; tvY[4] += 9; tvY[5] += 12; }
         headYaw = Math.sin(t * 0.3) * 0.3;
+        chestG.scale.x = 1 + Math.sin(t * 1.7) * 0.015;   // slow breathing
+        // after sitting a while, settle into a cozy loaf with sleepy eyes
+        const loaf = smoothstep(8, 10.5, sitT);
+        if (loaf > 0) {
+          bodyY = lerp(bodyY, -0.145, loaf);
+          bodyPitch = lerp(bodyPitch, -0.08, loaf);
+          neckPitch = lerp(neckPitch, 0.22, loaf);
+          T[0].tz = T[1].tz = lerp(0.1, 0.14, loaf);
+          T[0].ty = T[1].ty = lerp(-0.32, -0.12, loaf);
+          T[2].ty = T[3].ty = -0.1;
+          L[0] = L[1] = loaf * 0.85;                      // paws tucked under
+          tailLift = -0.45; tailCurl = 0.7;
+          sleepy = loaf * 0.6;
+          headYaw = Math.sin(t * 0.18) * 0.15 * (1 - loaf * 0.5);
+        }
         break;
       }
       case 'idle': {
@@ -387,7 +406,7 @@ export function createCat(paletteKey = 'percy') {
         groomClock += dt;
         sinceStretch += dt;
         // big cat stretch after a while idle: butt up, chest down, front paws forward
-        if (stretchT <= 0 && sinceStretch > 9 && grooming <= 0) { stretchT = 2.4; sinceStretch = 0; }
+        if (stretchT <= 0 && sinceStretch > 6 && grooming <= 0) { stretchT = 2.4; sinceStretch = 0; }
         if (stretchT > 0) {
           stretchT -= dt;
           const e = Math.sin(clamp(1 - stretchT / 2.4, 0, 1) * Math.PI);  // ease in-out
@@ -399,13 +418,14 @@ export function createCat(paletteKey = 'percy') {
           neckPitch = -0.3 * e;
           headYaw = 0;
           tailLift = 0.35 + 0.55 * e;
-        } else if (grooming <= 0 && groomClock > 5.5) { grooming = 2.6; groomClock = 0; }
+        } else if (grooming <= 0 && groomClock > 3.2) { grooming = 2.6; groomClock = 0; }
         if (grooming > 0) {
           grooming -= dt;
           const gph = Math.sin(t * 9);
           // right front paw up doing circular wipes, head tucked to meet it
           T[0].tz = 0.16 + gph * 0.025;
           T[0].ty = -0.1 + gph * 0.02;
+          L[0] = 0.9;
           neckPitch = 0.55;
           headYaw = 0.25 + gph * 0.12;
           headPitch = 0.15;
@@ -448,6 +468,7 @@ export function createCat(paletteKey = 'percy') {
             const s = (p - duty) / (1 - duty);
             const e = s * s * (3 - 2 * s);
             fz = lerp(-amp, amp, e); fy = Math.sin(s * Math.PI) * lift;
+            L[i] = Math.sin(s * Math.PI);   // paw droops mid-swing
           }
           T[i].tz = fz + lead;
           T[i].ty = (leg.front ? -0.31 : -0.3) + fy;
@@ -462,9 +483,12 @@ export function createCat(paletteKey = 'percy') {
         // spine flexion/extension — the signature gallop whip
         chestFlex = Math.sin(cyc) * (0.03 + 0.17 * gallopW);
         rearFlex = Math.sin(cyc + Math.PI * 0.65) * (0.025 + 0.2 * gallopW);
+        // suspension phase: the whole body stretches out mid-leap
+        stretchZ = 1 + Math.sin(cyc + 1.1) * 0.055 * gallopW;
         // cats keep their head level: counter the chest motion
         neckPitch = -chestFlex * 0.8 - 0.06 * gallopW;
-        headYaw = 0;
+        // look into the turn
+        headYaw = clamp((S.lean || 0) * 1.6, -0.45, 0.45);
         earFlat = gallopW * 0.55;
         tailLift = 0.4 + gallopW * 0.3;
         tailSway = 0.14; tailFreq = 1 + freq * 0.5; tailCurl = 0.05;
@@ -474,6 +498,7 @@ export function createCat(paletteKey = 'percy') {
         // full launch extension: hind legs driving back, front tucked
         T[0].tz = T[1].tz = 0.06; T[0].ty = T[1].ty = -0.15;
         T[2].tz = T[3].tz = -0.17; T[2].ty = T[3].ty = -0.3;
+        L[0] = L[1] = 1; L[2] = L[3] = 0.5;
         bodyPitch = 0.32;
         chestFlex = -0.12; rearFlex = 0.1;                   // spine extended
         neckPitch = -0.28;
@@ -485,6 +510,7 @@ export function createCat(paletteKey = 'percy') {
         // gather for landing: all four reaching down-forward
         T[0].tz = T[1].tz = 0.13; T[0].ty = T[1].ty = -0.26;
         T[2].tz = T[3].tz = 0.02; T[2].ty = T[3].ty = -0.22;
+        L[0] = L[1] = 0.2; L[2] = L[3] = 0.35;
         bodyPitch = -0.18;
         chestFlex = 0.1; rearFlex = -0.08;                   // spine arched
         neckPitch = 0.32;
@@ -500,6 +526,7 @@ export function createCat(paletteKey = 'percy') {
           const leg = legs[i];
           T[i].tz = (leg.front ? 0.1 : 0.0) + reach * 0.09;
           T[i].ty = -0.2 - Math.max(0, -reach) * 0.06 + Math.max(0, reach) * 0.03;
+          L[i] = Math.max(0, reach) * 0.7;
         }
         bodyPitch = -1.18;
         neckPitch = 1.05;
@@ -510,6 +537,7 @@ export function createCat(paletteKey = 'percy') {
         // reaching strike — front paws out, claws first
         T[0].tz = T[1].tz = 0.2; T[0].ty = T[1].ty = -0.17;
         T[2].tz = T[3].tz = -0.16; T[2].ty = T[3].ty = -0.28;
+        L[0] = L[1] = 0.7; L[2] = L[3] = 0.4;
         bodyPitch = 0.42;
         chestFlex = -0.1;
         neckPitch = -0.2;
@@ -524,6 +552,7 @@ export function createCat(paletteKey = 'percy') {
           const ph = sph + (i === 0 || i === 3 ? 0 : Math.PI) + (legs[i].front ? 0 : 1.2);
           T[i].tz = Math.cos(ph) * 0.09 + (legs[i].front ? 0.05 : -0.03);
           T[i].ty = -0.19 + Math.sin(ph) * 0.06;
+          L[i] = 0.6;
         }
         bodyPitch = -0.26;
         neckPitch = 0.6;
@@ -534,8 +563,17 @@ export function createCat(paletteKey = 'percy') {
       }
     }
 
+    // eyes: blink wins, then sleepiness half-closes them
+    for (const e of eyes) e.scale.y = blink > 0 ? 0.12 : 1 - sleepy * 0.62;
+
+    // pitch with the terrain so Percy hugs the hills
+    if (S.grounded && (S.mode === 'idle' || S.mode === 'walk' || S.mode === 'run' || S.mode === 'sit')) {
+      bodyPitch -= (S.slope || 0) * 0.8;
+    }
+
     // apply body + spine
     body.position.y = damp(body.position.y, bodyY, locomoting ? 16 : 10, dt);
+    body.scale.z = damp(body.scale.z, stretchZ, 14, dt);
     body.rotation.x = damp(body.rotation.x, bodyPitch, 10, dt);
     body.rotation.z = damp(body.rotation.z, bodyRoll, 8, dt);
     chest.rotation.x = damp(chest.rotation.x, chestFlex, 14, dt);
@@ -545,13 +583,17 @@ export function createCat(paletteKey = 'percy') {
     if (headYaw !== null) head.rotation.y = damp(head.rotation.y, headYaw, 3, dt);
     for (const ear of ears) ear.rotation.x = damp(ear.rotation.x, -earFlat * 0.6, 9, dt);
 
-    // apply legs: damp foot targets, then IK
+    // apply legs: damp foot targets, then IK, then ground-aware paw pitch
     const legLambda = locomoting ? 30 : 14;
     for (let i = 0; i < 4; i++) {
       const leg = legs[i];
       leg.tz = damp(leg.tz, T[i].tz, legLambda, dt);
       leg.ty = damp(leg.ty, T[i].ty, legLambda, dt);
+      leg.lift = damp(leg.lift, L[i], 16, dt);
       solveLeg(leg);
+      // planted paws counter-rotate to lie flat; lifted paws droop naturally
+      const flat = -(leg.pivot.rotation.x + leg.knee.rotation.x);
+      leg.paw.rotation.x = flat * (1 - leg.lift) + 0.55 * leg.lift;
     }
 
     // tail: driven base + spring-lag chain (whip follows through naturally)

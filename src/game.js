@@ -1,6 +1,6 @@
 // Core game: renderer, camera, character physics, gameplay state and HUD.
 import * as THREE from 'three';
-import { clamp, lerp, dampAngle, rand, TAU, formatTime } from './util.js';
+import { clamp, lerp, damp, dampAngle, rand, TAU, formatTime } from './util.js';
 import { createCat } from './cat.js';
 import { buildWorld, groundHeight, waterLevelAt, LAKE_WATER_Y } from './world.js';
 
@@ -43,6 +43,10 @@ export class Game {
     this.camYaw = Math.PI;      // look toward -Z initially (into the bedroom)
     this.camPitch = -0.18;
     this.camDist = 4.3;
+    // mouse writes to targets; actual angles chase them for a crisp but
+    // jitter-free look (raw pointer deltas feel scratchy)
+    this._yawT = this.camYaw;
+    this._pitchT = this.camPitch;
 
     this._setupLights();
     this._setupSky();
@@ -217,10 +221,9 @@ export class Game {
 
     this.canvas.addEventListener('mousemove', (e) => {
       if (document.pointerLockElement !== this.canvas) return;
-      const s = 0.0022 * this.settings.sensitivity;
-      this.camYaw -= e.movementX * s;
-      this.camPitch += e.movementY * s * (this.settings.invertY ? 1 : -1);
-      this.camPitch = clamp(this.camPitch, -1.15, 0.7);
+      const s = 0.0024 * this.settings.sensitivity;
+      this._yawT -= e.movementX * s;
+      this._pitchT = clamp(this._pitchT + e.movementY * s * (this.settings.invertY ? 1 : -1), -1.15, 0.7);
     });
   }
 
@@ -267,8 +270,8 @@ export class Game {
     this.pos.copy(this.world.startPos);
     this.vel.set(0, 0, 0);
     this.facing = Math.PI;
-    this.camYaw = Math.PI + 0.4;
-    this.camPitch = -0.12;
+    this.camYaw = this._yawT = Math.PI + 0.4;
+    this.camPitch = this._pitchT = -0.12;
     this.snapshot = this._makeSnapshot();
     this.state = 'playing';
     this.paused = false;
@@ -450,6 +453,9 @@ export class Game {
     dt *= this.timeScale;
 
     if (!this.paused) {
+      // camera angles chase the input targets (high lambda = responsive)
+      this.camYaw = dampAngle(this.camYaw, this._yawT, 34, realDt);
+      this.camPitch = damp(this.camPitch, this._pitchT, 34, realDt);
       if (this.state === 'playing') {
         this.runTime += dt;
         this._stepPlayer(dt);
@@ -552,17 +558,17 @@ export class Game {
     this.pounceT = Math.max(0, this.pounceT - dt);
 
     // touch camera
-    this.camYaw -= this.touch.cam.x * dt * 2.4 * this.settings.sensitivity;
-    this.camPitch = clamp(this.camPitch - this.touch.cam.y * dt * 1.8 * (this.settings.invertY ? -1 : 1), -1.15, 0.7);
+    this._yawT -= this.touch.cam.x * dt * 2.4 * this.settings.sensitivity;
+    this._pitchT = clamp(this._pitchT - this.touch.cam.y * dt * 1.8 * (this.settings.invertY ? -1 : 1), -1.15, 0.7);
 
     const sprint = this.keys.ShiftLeft || this.keys.ShiftRight || this.touch.sprint;
     const speedCap = this.swimming ? SWIM : sprint ? RUN : WALK;
 
-    // desired velocity in camera space
+    // desired velocity in camera space: forward = (sin, cos), right = (-cos, sin)
     const sin = Math.sin(this.camYaw), cos = Math.cos(this.camYaw);
-    const wishX = (input.x * cos + input.z * sin);
-    const wishZ = (-input.x * sin + input.z * cos);
-    const accel = this.grounded ? 14 : 5.5;
+    const wishX = (input.z * sin - input.x * cos);
+    const wishZ = (input.z * cos + input.x * sin);
+    const accel = this.grounded ? 19 : 7.5;
     this.vel.x = lerp(this.vel.x, wishX * speedCap * input.len, 1 - Math.exp(-accel * dt));
     this.vel.z = lerp(this.vel.z, wishZ * speedCap * input.len, 1 - Math.exp(-accel * dt));
 
@@ -708,8 +714,8 @@ export class Game {
         this.pos.z += dz * push;
       }
       // are we pressing into this wall? (dx,dz normalized by penetration depth)
-      const inx = Math.sin(this.camYaw) * input.z + Math.cos(this.camYaw) * input.x;
-      const inz = Math.cos(this.camYaw) * input.z - Math.sin(this.camYaw) * input.x;
+      const inx = Math.sin(this.camYaw) * input.z - Math.cos(this.camYaw) * input.x;
+      const inz = Math.cos(this.camYaw) * input.z + Math.sin(this.camYaw) * input.x;
       const pressing = input.len > 0.25 && (inx * dx + inz * dz) / d < -0.35;
       if (pressing) {
         if (c.climb && !this.swimming) {
@@ -826,8 +832,16 @@ export class Game {
     else if (!this.grounded) mode = this.vel.y > 0.5 ? 'jump' : 'fall';
     else if (hSpeed > 4.2) mode = 'run';
     else if (hSpeed > 0.5) mode = 'walk';
-    else if (this.idleTime > 6) mode = 'sit';
-    this.cat.update(dt, { mode, speed: hSpeed, grounded: this.grounded, lean: -turnRate * 0.09 });
+    else if (this.idleTime > 9) mode = 'sit';
+    // ground slope along the facing direction so the body pitches with hills
+    let slope = 0;
+    if (this.grounded && !this.climbing) {
+      const fs = Math.sin(this.facing), fc = Math.cos(this.facing);
+      const ah = groundHeight(this.pos.x + fs * 0.45, this.pos.z + fc * 0.45);
+      const bh = groundHeight(this.pos.x - fs * 0.45, this.pos.z - fc * 0.45);
+      slope = clamp(Math.atan2(ah - bh, 0.9), -0.45, 0.45);
+    }
+    this.cat.update(dt, { mode, speed: hSpeed, grounded: this.grounded, lean: -turnRate * 0.09, slope });
 
     // invulnerability blink
     this.cat.group.visible = this.invuln <= 0 || Math.sin(performance.now() * 0.025) > -0.4;
@@ -856,7 +870,7 @@ export class Game {
     const gy = groundHeight(want.x, want.z);
     if (want.y < gy + 0.3) want.y = gy + 0.3;
 
-    const k = 1 - Math.exp(-12 * dt);
+    const k = 1 - Math.exp(-20 * dt);
     this._camPos.lerp(want, k);
     this.camera.position.copy(this._camPos);
     this.camera.lookAt(this.pos.x, targetY, this.pos.z);

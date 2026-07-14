@@ -284,16 +284,29 @@ export function buildWorld(scene) {
     box(2.1, 3.35, 1.75, 2.2, 0.7, 0.5, M.brick, { name: 'sill' });   // below hole → the sill
     // sill ledge outside
     box(2.1, 3.62, 2.15, 2.4, 0.16, 0.5, M.woodLight, { name: 'ledge' });
-    // open window frame + swung-open pane
-    const frame = new THREE.Mesh(new THREE.BoxGeometry(2.3, 1.9, 0.12), M.white);
-    frame.position.set(2.1, 4.6, 1.99);
-    const holeCut = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.6, 0.2), new THREE.MeshBasicMaterial({ color: '#101418' }));
-    holeCut.position.set(2.1, 4.6, 1.98);
-    statics.add(holeCut, frame);
-    const pane = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.7, 0.06), M.glass);
-    pane.position.set(3.35, 4.6, 2.55);
-    pane.rotation.y = -1.1;
-    statics.add(pane);
+    // open window: a real frame around the hole so the garden and sky show through
+    {
+      const top = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.16, 0.56), M.white);
+      top.position.set(2.1, 5.42, 1.75);
+      const left = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.68, 0.56), M.white);
+      left.position.set(1.08, 4.6, 1.75);
+      const right = left.clone();
+      right.position.x = 3.12;
+      // interior sill board sticks into the room — a step up for Percy
+      const sillIn = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.12, 0.8), M.woodLight);
+      sillIn.position.set(2.1, 3.76, 1.7);
+      statics.add(top, left, right, sillIn);
+      // swung-open casement pane: white frame + glass, hinged on the right
+      const pane = new THREE.Group();
+      pane.position.set(3.12, 4.6, 2.05);
+      pane.rotation.y = -1.15;
+      const pFrame = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.68, 0.06), M.white);
+      pFrame.position.x = -0.5;
+      const pGlass = new THREE.Mesh(new THREE.BoxGeometry(0.84, 1.5, 0.07), M.glass);
+      pGlass.position.x = -0.5;
+      pane.add(pFrame, pGlass);
+      statics.add(pane);
+    }
     // roof
     const roof = new THREE.Mesh(new THREE.ConeGeometry(10.6, 2.8, 4), M.roof);
     roof.rotation.y = Math.PI / 4;
